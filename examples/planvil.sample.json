@@ -1,0 +1,9 @@
+{
+  "docs_root": "planvil",
+  "docs_gitignored": true,
+  "require_plan_approval": false,
+  "max_repair_cycles": 5,
+  "max_equivalent_failures": 3,
+  "readonly_commands": [],
+  "allowed_tools": []
+}
