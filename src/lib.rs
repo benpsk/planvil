@@ -1,6 +1,7 @@
 //! planvil core: host-independent workflow state, policy, and storage.
 
 pub mod config;
+pub mod docs;
 pub mod fingerprint;
 pub mod git;
 pub mod layout;
