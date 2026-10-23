@@ -1,0 +1,18 @@
+{
+  "name": "planvil",
+  "version": "0.1.0",
+  "description": "Enforced feature workflow: feature, audit, plan, decide, implement, validate, repair, done. Hooks gate each stage; the planvil binary records evidence.",
+  "license": "MIT",
+  "keywords": [
+    "workflow",
+    "planning",
+    "verification",
+    "hooks"
+  ],
+  "author": {
+    "name": "benpsk"
+  },
+  "homepage": "https://github.com/benpsk/planvil",
+  "repository": "https://github.com/benpsk/planvil",
+  "icon": ".claude-plugin/icon.png"
+}

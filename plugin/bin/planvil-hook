@@ -1,0 +1,30 @@
+#!/bin/sh
+# planvil hook launcher. Runs the planvil binary when it is installed. Without the binary
+# no planvil run can exist, so there is nothing to enforce and the hook stays silent
+# (apart from a one-line notice at session start).
+event="$1"
+
+find_planvil() {
+    for candidate in \
+        "${PLANVIL_BIN:-}" \
+        "$(command -v planvil 2>/dev/null)" \
+        "$HOME/.cargo/bin/planvil" \
+        "$HOME/.cargo/bin/planvil.exe" \
+        "${CLAUDE_PLUGIN_DATA:-/nonexistent}/bin/planvil"; do
+        if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if bin=$(find_planvil); then
+    exec "$bin" hook claude "$event"
+fi
+
+cat > /dev/null
+if [ "$event" = "session-start" ]; then
+    printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"The planvil plugin is installed, but the planvil binary is not. If the user runs /planvil:planvil, install the binary first as the planvil skill describes."}}'
+fi
+exit 0

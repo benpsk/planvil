@@ -1,0 +1,8 @@
+{
+  "name": "planvil",
+  "description": "planvil: enforced feature workflow for Claude Code",
+  "owner": { "name": "planvil" },
+  "plugins": [
+    { "name": "planvil", "source": "./plugin", "description": "Enforced feature workflow with stage gates and recorded verification evidence." }
+  ]
+}
