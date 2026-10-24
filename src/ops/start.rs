@@ -176,8 +176,8 @@ fn switch_branch(root: &Path, branch: &str, base: &str) -> Result<String> {
         return Err(OpsError::NeedsInput {
             code: "NEEDS_CLEAN_WORKTREE",
             message: format!(
-                "the worktree has uncommitted changes ({}). planvil never stashes or resets user work: \
-                 ask the user to commit or stash them, then rerun",
+                "the worktree has uncommitted changes ({}). Ask the user with AskUserQuestion whether to \
+                 commit them; if they choose to, commit exactly these files and rerun. Never stash or reset them",
                 dirty.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
             ),
         });

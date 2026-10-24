@@ -328,7 +328,7 @@ fn answer_requires_a_real_user_message_after_the_question() {
     ask(r.root(), "Right?", QuestionKind::ConfirmFeature).unwrap();
     assert_eq!(r.state().status, Status::WaitingForUser);
     let err = answer(r.root(), "yes", Some(true)).unwrap_err().to_string();
-    assert!(err.contains("no user message"), "{err}");
+    assert!(err.contains("no user reply"), "{err}");
     r.user_replied();
     answer(r.root(), "yes", Some(true)).unwrap();
     assert_eq!(r.state().status, Status::Active);

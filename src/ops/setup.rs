@@ -126,7 +126,7 @@ fn summarize(
     }
     out.push(
         "USABLE. next: summarize the setup for the user (how the app starts, what is checked, known \
-         failures) and run `planvil ask --approve-setup \"<summary>\"`, then end your turn. After approval, \
+         failures) and run `planvil ask --approve-setup \"<summary>\"`, then ask with AskUserQuestion. After approval, \
          run `planvil setup apply`."
             .into(),
     );

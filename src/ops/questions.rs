@@ -72,8 +72,8 @@ pub fn ask(cwd: &Path, text: &str, kind: QuestionKind) -> Result<String> {
     };
     lock.save(&asked)?;
     Ok(format!(
-        "Q{id} recorded. Show the question to the user and end your turn; planvil allows stopping while it \
-         waits. Record their reply with `planvil answer \"...\"`{}.",
+        "Q{id} recorded. Now ask the user with AskUserQuestion (options, recommendation first); if that \
+         tool is unavailable, ask in chat and end your turn. Record their reply with `planvil answer \"...\"`{}.",
         if kind == QuestionKind::General {
             ""
         } else {
@@ -92,7 +92,7 @@ pub fn answer(cwd: &Path, text: &str, approved: Option<bool>) -> Result<String> 
     // The answer must come after a real user prompt, counted by the prompt hook.
     if state.user_prompts <= question.asked_after_prompt {
         return Err(refused(format!(
-            "no user message since Q{} was asked. End your turn and wait for the user's reply.",
+            "no user reply since Q{} was asked. Ask with AskUserQuestion, or end your turn and wait for the user.",
             question.id
         )));
     }

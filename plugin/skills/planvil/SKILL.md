@@ -13,6 +13,30 @@ planvil command prints. These instructions guide you; they are not the enforceme
 
 Arguments: `$ARGUMENTS`
 
+## Asking the user
+
+Every question to the user goes through the **AskUserQuestion** tool, never as plain text at
+the end of a message. Whenever the next step needs the user to choose something, offer the
+choice as a prompt and then carry out the chosen option yourself. Don't tell the user to go
+do it and come back. Give 2–4 concrete options, put your recommendation first and mark it
+"(Recommended)". The user can always pick "Other" and type an answer. Use a short `header`
+(for example "Branch", "Base", "Setup", "Feature"). Typical options:
+
+| Question | Options |
+|---|---|
+| Feature branch name | 2–3 names following the repo's existing branch pattern (see `git branch -a`), e.g. `sp21/stock-adjustments`, `feat/stock-adjustments` |
+| Base branch | The likely base branches from `git branch -a` (`main`, `production`, `dev`, ...) |
+| Feature description, when none was given | Ask what the feature is: offer "I'll describe it" and "Use a spec file" |
+| Confirm FEATURE.md | "Approve", "Change something" (put the summary in the question) |
+| Approve setup | "Approve", "Change something" |
+| Material decision (Decide stage) | The real alternatives, each with its consequence in `description` |
+| Install the planvil program | "Install it now (Recommended)", "Not now" |
+| Uncommitted changes block a branch switch | "Commit them (Recommended)", "I'll handle it myself", "Cancel" |
+
+An answer to AskUserQuestion counts as the user's reply for `planvil answer`, so you can keep
+working in the same turn. Only fall back to asking in chat (and ending your turn) if the
+tool is unavailable.
+
 ## Rules
 
 - Never edit `.planvil.json`, anything under a `.planvil/` folder, or hook settings. Never
@@ -67,11 +91,18 @@ given. With no branch argument, run `planvil start` to resume this branch's run.
 
 If it fails with one of these codes, resolve it and rerun:
 
-- `NEEDS_BASE_BRANCH`: list candidates with `git branch -a`, ask the user with AskUserQuestion
-  which branch feature branches are cut from, then rerun with `--base <branch>`.
-- `NEEDS_BRANCH`: ask the user for the feature branch name.
-- `NEEDS_CLEAN_WORKTREE`: show the listed files and ask the user to commit or stash them
-  themselves. Stop until they say it is done.
+- `NEEDS_BASE_BRANCH`: list candidates with `git branch -a` and ask with AskUserQuestion
+  which branch feature branches are cut from; rerun with `--base <branch>`.
+- `NEEDS_BRANCH`: ask with AskUserQuestion for the feature branch name (and what the feature
+  is, if the user has not said), offering names that follow the repo's branch pattern.
+- `NEEDS_CLEAN_WORKTREE`: there are uncommitted changes. Ask with AskUserQuestion, listing
+  the files in the question: "Commit them (Recommended)", "I'll handle it myself", "Cancel".
+  - **Commit them:** stage exactly the listed files (`git add <files>`), commit with a short
+    conventional message describing them, and rerun `planvil start` with the same arguments.
+  - **I'll handle it myself:** stop and wait.
+  - **Cancel:** stop.
+
+  Only commit when the user chose it. Never stash, reset or discard their work.
 
 When resuming, run `planvil status` and re-read the feature folder and the relevant code
 before acting. Do not assume an interrupted verification passed.
@@ -127,16 +158,15 @@ fails for each step.
   `known_failures`. Never park a whole test suite there.
 
 Repeat until it says USABLE. Then summarize for the user in a few lines: how the app starts,
-what is checked, and any known failures. Run `planvil ask --approve-setup "<summary>"`, ask
-the user, and end your turn. After they approve, run `planvil answer --approved "<reply>"`
+what is checked, and any known failures. Run `planvil ask --approve-setup "<summary>"` and ask the user
+with AskUserQuestion. After they approve, run `planvil answer --approved "<reply>"`
 and then `planvil setup apply`.
 
 **Feature.** If a spec was copied to `SOURCE-SPEC.md`, rewrite it into FEATURE.md under the
 template headings without changing its meaning. Otherwise interview the user: goal, users,
 scope, out of scope, behavior and edge cases, then acceptance criteria as a table with stable
 IDs `AC-01`, `AC-02`, … Then run `planvil ask --confirm-feature "<short summary>. Is this right?"`,
-put the same question to the user with AskUserQuestion (or in chat and end your turn), and
-record the reply:
+ask the user with AskUserQuestion, and record the reply:
 
 - `planvil answer --approved "<reply>"` if they agree
 - `planvil answer --rejected "<reply>"` if not; revise and ask again
@@ -175,8 +205,8 @@ check or runtime scenario:
 Then run `planvil advance`.
 
 **Decide.** Record decisions in DECISIONS.md: decision, why, alternatives, and who decided.
-For a material question, run `planvil ask "<question>"`, ask the user (AskUserQuestion, or in
-chat and end your turn), then run `planvil answer "<reply>"`. Ask one question at a time.
+For a material question, run `planvil ask "<question>"`, ask the user with AskUserQuestion
+(the alternatives as options), then run `planvil answer "<reply>"`. Ask one question at a time.
 Update PLAN.md if an answer changes it. List questions under `## Open questions` as `- [x]`
 once answered. If planvil asks for plan approval, use `planvil ask --approve-plan "..."`. Approval covers
 PLAN.md and verify.json together.

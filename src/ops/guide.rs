@@ -77,7 +77,8 @@ pub fn next_action(ws: &Workspace, state: &RunState) -> String {
                 .map(|q| q.text.as_str())
                 .unwrap_or("(question)");
             return format!(
-                "waiting for the user to answer: {q}. End your turn. When they reply, record it with \
+                "waiting for the user to answer: {q}. Ask with AskUserQuestion if you have not (or end your turn). \
+                 When they reply, record it with \
                  `planvil answer \"<their answer>\"` (add --approved or --rejected for confirmations)."
             );
         }
@@ -111,7 +112,7 @@ pub fn next_action(ws: &Workspace, state: &RunState) -> String {
             "set up how this project runs and is checked (once per repository). Discover it from CI \
              workflows, Makefile/justfile, package scripts, manifests, docker-compose and README; write \
              {dir}/setup.proposed.json; run `planvil setup check` until it is USABLE; then \
-             `planvil ask --approve-setup \"<summary>\"`, end your turn, and after approval run `planvil setup apply`."
+             `planvil ask --approve-setup \"<summary>\"` and ask with AskUserQuestion; after approval run `planvil setup apply`."
         ),
         Stage::Feature => {
             let confirmed = state.feature_confirmed_hash.is_some()
@@ -122,7 +123,7 @@ pub fn next_action(ws: &Workspace, state: &RunState) -> String {
                 format!(
                     "write {dir}/FEATURE.md with the user (goal, scope, out of scope, behavior, acceptance \
                      criteria AC-01…). Then run `planvil ask --confirm-feature \"<summary; is this right?>\"` \
-                     and end your turn."
+                     and ask with AskUserQuestion."
                 )
             }
         }
@@ -236,7 +237,7 @@ fn repair_step(ws: &Workspace, state: &RunState) -> Option<String> {
                     .to_string()
             } else {
                 "FEATURE.md changed since the user confirmed it. Ask once with `planvil ask --confirm-feature \
-                 \"<what changed and why>\"`, end your turn, then record the reply."
+                 \"<what changed and why>\"` with AskUserQuestion, then record the reply."
                     .to_string()
             }
         }
