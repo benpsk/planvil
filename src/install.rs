@@ -16,6 +16,8 @@ const MARKETPLACE_JSON: &str = include_str!("../.claude-plugin/marketplace.json"
 const PLUGIN_JSON: &str = include_str!("../plugin/.claude-plugin/plugin.json");
 const HOOKS_JSON: &str = include_str!("../plugin/hooks/hooks.json");
 const SKILL_MD: &str = include_str!("../plugin/skills/planvil/SKILL.md");
+const CODEX_PLUGIN_JSON: &str = include_str!("../plugin/.codex-plugin/plugin.json");
+const CODEX_HOOKS_JSON: &str = include_str!("../plugin/hooks/codex-hooks.json");
 
 /// Folder holding the generated marketplace. `PLANVIL_HOME` overrides it.
 pub fn data_dir() -> Option<PathBuf> {
@@ -66,6 +68,36 @@ fn point_at(value: &mut Value, exe: &str) {
     }
 }
 
+/// Codex `codex-hooks.json` with each launcher command replaced by a direct call to
+/// `exe hook codex <event>`. Codex runs hook commands through a shell, so the path is quoted.
+pub fn codex_hooks_for(exe: &Path) -> Result<String, String> {
+    let mut value: Value = serde_json::from_str(CODEX_HOOKS_JSON).map_err(|e| e.to_string())?;
+    let quoted = format!("'{}'", exe.display().to_string().replace('\'', r"'\''"));
+    codex_point_at(&mut value, &quoted);
+    serde_json::to_string_pretty(&value).map_err(|e| e.to_string())
+}
+
+fn codex_point_at(value: &mut Value, exe: &str) {
+    match value {
+        Value::Object(map) => {
+            let event = map
+                .get("command")
+                .and_then(Value::as_str)
+                .filter(|c| c.contains("planvil-hook"))
+                .and_then(|c| c.split_whitespace().nth(2).map(str::to_string));
+            if let Some(event) = event {
+                map.insert(
+                    "command".into(),
+                    Value::String(format!("{exe} hook codex {event}")),
+                );
+            }
+            map.values_mut().for_each(|v| codex_point_at(v, exe));
+        }
+        Value::Array(items) => items.iter_mut().for_each(|v| codex_point_at(v, exe)),
+        _ => {}
+    }
+}
+
 /// Write the marketplace and plugin files under `dir`.
 pub fn write_marketplace(dir: &Path, exe: &Path) -> Result<(), String> {
     let files = [
@@ -76,6 +108,11 @@ pub fn write_marketplace(dir: &Path, exe: &Path) -> Result<(), String> {
         ("plugin/.claude-plugin/plugin.json", PLUGIN_JSON.to_string()),
         ("plugin/hooks/hooks.json", hooks_for(exe)?),
         ("plugin/skills/planvil/SKILL.md", SKILL_MD.to_string()),
+        (
+            "plugin/.codex-plugin/plugin.json",
+            CODEX_PLUGIN_JSON.to_string(),
+        ),
+        ("plugin/hooks/codex-hooks.json", codex_hooks_for(exe)?),
     ];
     for (rel, body) in files {
         let path = dir.join(rel);
@@ -151,11 +188,13 @@ pub fn install(scope: &str) -> Result<String, String> {
 }
 
 /// Files `write_marketplace` creates, relative to the data folder.
-const MARKETPLACE_FILES: [&str; 4] = [
+const MARKETPLACE_FILES: [&str; 6] = [
     ".claude-plugin/marketplace.json",
     "plugin/.claude-plugin/plugin.json",
     "plugin/hooks/hooks.json",
     "plugin/skills/planvil/SKILL.md",
+    "plugin/.codex-plugin/plugin.json",
+    "plugin/hooks/codex-hooks.json",
 ];
 
 /// Whether the `claude ... list --json` output has an entry whose `key` equals `value`.
@@ -201,7 +240,7 @@ pub fn uninstall(scope: &str) -> Result<String, String> {
 
 /// Remove only the files planvil wrote, then any folders left empty. Never removes
 /// anything else under the data folder.
-fn remove_marketplace_files(dir: &Path) -> Result<usize, String> {
+pub(crate) fn remove_marketplace_files(dir: &Path) -> Result<usize, String> {
     let mut removed = 0;
     for rel in MARKETPLACE_FILES {
         let path = dir.join(rel);
@@ -276,7 +315,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_marketplace(dir.path(), Path::new("/x/planvil")).unwrap();
         std::fs::write(dir.path().join("keep.txt"), "user file").unwrap();
-        assert_eq!(remove_marketplace_files(dir.path()).unwrap(), 4);
+        assert_eq!(remove_marketplace_files(dir.path()).unwrap(), 6);
         assert!(dir.path().join("keep.txt").exists());
         assert!(!dir.path().join("plugin").exists());
     }
@@ -286,5 +325,37 @@ mod tests {
         // Release tags must match both; /plugin update reads the manifest version.
         let manifest: Value = serde_json::from_str(PLUGIN_JSON).unwrap();
         assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn codex_hooks_point_at_the_given_binary_and_cover_every_event() {
+        let hooks: Value =
+            serde_json::from_str(&codex_hooks_for(Path::new("/opt/bin/planvil")).unwrap()).unwrap();
+        for (event, arg) in [
+            ("SessionStart", "session-start"),
+            ("UserPromptSubmit", "prompt"),
+            ("PreToolUse", "pre-tool"),
+            ("PostToolUse", "post-tool"),
+            ("Stop", "stop"),
+        ] {
+            let cmd = hooks["hooks"][event][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap();
+            assert_eq!(
+                cmd,
+                format!("'/opt/bin/planvil' hook codex {arg}"),
+                "{event}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_manifest_names_its_own_hooks_file_and_matches_the_crate_version() {
+        let manifest: Value = serde_json::from_str(CODEX_PLUGIN_JSON).unwrap();
+        assert_eq!(manifest["hooks"], "./hooks/codex-hooks.json");
+        assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
+        // Codex runs hook commands as shell strings; it has no `args`, so the Claude file must
+        // never be the one it loads.
+        assert!(!CODEX_HOOKS_JSON.contains("\"args\""));
     }
 }

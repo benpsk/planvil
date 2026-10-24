@@ -4,10 +4,13 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
+/// Run planvil as a user would in a terminal: outside any agent shell.
 fn planvil(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_planvil"))
         .args(args)
         .current_dir(dir)
+        .env_remove("CLAUDECODE")
+        .env_remove("CODEX_CI")
         .output()
         .unwrap()
 }
@@ -133,6 +136,7 @@ fn user_controls_refuse_to_run_inside_claude_codes_shell() {
     let out = Command::new(env!("CARGO_BIN_EXE_planvil"))
         .args(["cancel"])
         .env_remove("CLAUDECODE")
+        .env_remove("CODEX_CI")
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -206,4 +210,44 @@ fn launcher_with_the_binary_enforces() {
     );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+}
+
+#[test]
+fn start_from_an_agent_shell_refuses_when_no_hook_ran() {
+    let dir = repo();
+    let marker = std::env::temp_dir().join(format!(
+        "planvil-hook-heartbeat-{}",
+        std::env::var("USER").unwrap_or_else(|_| "user".into())
+    ));
+    // Make the marker stale rather than deleting it under other running tests.
+    let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    if let Ok(f) = std::fs::File::options().write(true).open(&marker) {
+        let _ = f.set_modified(stale);
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_planvil"))
+        .args(["start", "sp20/x", "--base", "main"])
+        .env("CODEX_CI", "1")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    if out.status.code() == Some(3) {
+        assert!(String::from_utf8_lossy(&out.stderr).contains("HOOKS_NOT_ACTIVE"));
+    }
+    // With a fresh marker (as the pre-tool hook leaves it), the same start proceeds.
+    hook(
+        dir.path(),
+        "pre-tool",
+        serde_json::json!({ "session_id": "s", "cwd": dir.path(), "tool_name": "Bash", "tool_input": { "command": "planvil start sp20/x --base main" } }),
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_planvil"))
+        .args(["start", "sp20/x", "--base", "main"])
+        .env("CODEX_CI", "1")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

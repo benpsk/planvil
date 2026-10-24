@@ -24,7 +24,7 @@ impl Fx {
             .unwrap()
             .entry("session_id")
             .or_insert(json!("s1"));
-        run(event, &payload.to_string(), self.root())
+        run(Host::Claude, event, &payload.to_string(), self.root())
     }
 
     fn pre(&self, tool: &str, tool_input: Value) -> Output {
@@ -83,6 +83,7 @@ fn no_run_means_no_output() {
 fn outside_a_repo_means_no_output() {
     let dir = tempfile::tempdir().unwrap();
     let out = run(
+        Host::Claude,
         HookEvent::PreTool,
         &json!({ "cwd": dir.path(), "tool_name": "Write", "tool_input": { "file_path": "x" } })
             .to_string(),
@@ -147,7 +148,12 @@ fn missing_tool_input_is_denied() {
 #[test]
 fn malformed_payload_with_an_active_run_is_denied() {
     let fx = started();
-    assert!(is_deny(&run(HookEvent::PreTool, "{not json", fx.root())));
+    assert!(is_deny(&run(
+        Host::Claude,
+        HookEvent::PreTool,
+        "{not json",
+        fx.root()
+    )));
 }
 
 #[test]
@@ -363,7 +369,12 @@ fn writes_into_a_run_repo_from_another_cwd_are_enforced() {
         "tool_name": "Write",
         "tool_input": { "file_path": fx.root().join("README.md") },
     });
-    let out = run(HookEvent::PreTool, &payload.to_string(), elsewhere.path());
+    let out = run(
+        Host::Claude,
+        HookEvent::PreTool,
+        &payload.to_string(),
+        elsewhere.path(),
+    );
     assert!(is_deny(&out), "{out:?}");
 }
 

@@ -11,8 +11,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::git;
+use crate::heartbeat;
 use crate::machine::{self, Event};
 use crate::ops::{self, Control, Workspace};
+use crate::patch;
 use crate::policy::{self, Call, Context, Decision, stage_name};
 use crate::shell;
 use crate::state::{RunState, Status, StopGuard};
@@ -23,7 +25,28 @@ const HOOK_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 const WRITE_TOOLS: [&str; 3] = ["Edit", "Write", "MultiEdit"];
 const NOTEBOOK_TOOLS: [&str; 1] = ["NotebookEdit"];
 const BASH_TOOLS: [&str; 1] = ["Bash"];
-const ASK_TOOL: &str = "AskUserQuestion";
+/// Tools whose result is the user's own answer to a structured question.
+const ASK_TOOLS: [&str; 2] = ["AskUserQuestion", "request_user_input"];
+/// Codex edits files through one patch that can touch several files.
+const PATCH_TOOL: &str = "apply_patch";
+
+/// The agent host whose hooks are calling. Payloads and outputs share one format; tool
+/// names and edit shapes differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Host {
+    Claude,
+    Codex,
+}
+
+impl Host {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "claude" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
@@ -88,7 +111,7 @@ fn reply_text(response: Option<&Value>) -> Option<String> {
 /// JSON to print on stdout (if any). Hooks always exit 0; decisions travel in the JSON.
 pub type Output = Option<Value>;
 
-pub fn run(event: HookEvent, stdin: &str, process_cwd: &Path) -> Output {
+pub fn run(host: Host, event: HookEvent, stdin: &str, process_cwd: &Path) -> Output {
     let parsed: Result<Input, _> = serde_json::from_str(stdin);
     let malformed = parsed.is_err();
     let input = parsed.unwrap_or_default();
@@ -99,7 +122,7 @@ pub fn run(event: HookEvent, stdin: &str, process_cwd: &Path) -> Output {
         .unwrap_or_else(|| process_cwd.to_path_buf());
     let located = locate(&cwd);
     match event {
-        HookEvent::PreTool => pre_tool(&input, &cwd, located, malformed),
+        HookEvent::PreTool => pre_tool(host, &input, &cwd, located, malformed),
         HookEvent::PostTool => post_tool(&input, located),
         HookEvent::Stop => stop(&input, located),
         HookEvent::Prompt => prompt(&input, &cwd, located),
@@ -171,6 +194,24 @@ fn to_call(input: &Input) -> Option<Call> {
     Some(Call::Other { tool, isolated })
 }
 
+/// The calls to check for one tool use. A Codex patch becomes one write per file it
+/// touches; `None` means the target cannot be determined (and is denied during a run).
+fn to_calls(host: Host, input: &Input) -> Option<Vec<Call>> {
+    let tool = input.tool_name.as_deref().unwrap_or("");
+    if host == Host::Codex && tool == PATCH_TOOL {
+        let paths = patch::touched_paths(str_field(&input.tool_input, "command")?);
+        if paths.is_empty() {
+            return None;
+        }
+        let writes = paths.into_iter().map(|p| Call::Write {
+            tool: PATCH_TOOL.into(),
+            path: PathBuf::from(p),
+        });
+        return Some(writes.collect());
+    }
+    to_call(input).map(|c| vec![c])
+}
+
 /// Whether a call is safe to allow even when planvil cannot read its own state.
 fn harmless_without_state(call: Option<&Call>) -> bool {
     match call {
@@ -182,16 +223,40 @@ fn harmless_without_state(call: Option<&Call>) -> bool {
     }
 }
 
-fn pre_tool(input: &Input, cwd: &Path, located: Located, malformed: bool) -> Output {
-    let call = to_call(input);
+fn pre_tool(host: Host, input: &Input, cwd: &Path, located: Located, malformed: bool) -> Output {
+    let calls = to_calls(host, input);
     let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    // A write can target a different repository than the session's working directory.
-    if let Some(Call::Write { path, .. }) = &call
-        && let Some(out) = enforce_target_repo(call.as_ref(), path, &cwd)
-    {
-        return Some(out);
+    let runs_planvil = calls
+        .iter()
+        .flatten()
+        .any(|c| matches!(c, Call::Bash { command } if command.contains("planvil")));
+    if runs_planvil {
+        // Lets `planvil start` prove that hooks run in this host (see `heartbeat`).
+        heartbeat::touch();
     }
-    enforce(call.as_ref(), &cwd, located, malformed)
+    let Some(calls) = calls else {
+        return enforce(None, &cwd, located, malformed);
+    };
+    for call in &calls {
+        // A write can target a different repository than the session's working directory.
+        if let Call::Write { path, .. } = call
+            && let Some(out) = enforce_target_repo(Some(call), path, &cwd)
+        {
+            return Some(out);
+        }
+        if let Some(out) = enforce(Some(call), &cwd, clone_located(&located), malformed) {
+            return Some(out);
+        }
+    }
+    None
+}
+
+/// `Located` holds a non-clonable error; re-derive it for each call of a multi-file patch.
+fn clone_located(located: &Located) -> Located {
+    match located {
+        Ok(found) => Ok(found.clone()),
+        Err(e) => Err(ops::OpsError::Refused(e.to_string())),
+    }
 }
 
 /// Evaluate a write against the repository that contains its target, when that differs
@@ -296,9 +361,9 @@ fn post_tool(input: &Input, located: Located) -> Output {
     }
     let tool = input.tool_name.as_deref().unwrap_or("");
     let session = input.session_id.clone();
-    let claim = state.session_id.is_none() && tool != ASK_TOOL && session.is_some();
+    let claim = state.session_id.is_none() && !ASK_TOOLS.contains(&tool) && session.is_some();
     // An answered AskUserQuestion is genuine user input, like a typed prompt.
-    let user_answered = tool == ASK_TOOL;
+    let user_answered = ASK_TOOLS.contains(&tool);
     if !claim && !user_answered {
         return None;
     }
@@ -510,3 +575,7 @@ fn session_start(input: &Input, located: Located) -> Output {
 #[cfg(test)]
 #[path = "hooks_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "hooks_codex_tests.rs"]
+mod codex_tests;

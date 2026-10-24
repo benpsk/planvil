@@ -1,6 +1,6 @@
 ---
 name: planvil
-description: Run an enforced feature workflow with planvil (feature → audit → plan → decide → implement → validate → repair → done). Use when the user invokes /planvil, asks to build a feature "with planvil", or wants to resume or check a planvil run.
+description: Run an enforced feature workflow with planvil (setup → feature → audit → plan → decide → implement → validate → done, looping on failure). Use when the user invokes planvil (/planvil:planvil in Claude Code, $planvil:planvil in Codex), asks to build a feature "with planvil", or wants to resume or check a planvil run.
 argument-hint: "[branch] [spec.md] | init | status | report | doctor | help"
 ---
 
@@ -15,8 +15,10 @@ Arguments: `$ARGUMENTS`
 
 ## Asking the user
 
-Every question to the user goes through the **AskUserQuestion** tool, never as plain text at
-the end of a message. Whenever the next step needs the user to choose something, offer the
+Every question to the user goes through the host's question tool, never as plain text at
+the end of a message: **AskUserQuestion** in Claude Code, **request_user_input** in Codex.
+If the tool is not available (Codex offers it only in some modes), ask in chat with the
+same numbered options and end your turn. Whenever the next step needs the user to choose something, offer the
 choice as a prompt and then carry out the chosen option yourself. Don't tell the user to go
 do it and come back. Give 2–4 concrete options, put your recommendation first and mark it
 "(Recommended)". The user can always pick "Other" and type an answer. Use a short `header`
@@ -34,9 +36,9 @@ do it and come back. Give 2–4 concrete options, put your recommendation first 
 | Uncommitted changes block a branch switch | "Commit them (Recommended)", "I'll handle it myself", "Cancel" |
 | Rename the run's branch | 2–3 better names following the repo's pattern, plus "Keep the current name" |
 
-An answer to AskUserQuestion counts as the user's reply for `planvil answer`, so you can keep
-working in the same turn. Only fall back to asking in chat (and ending your turn) if the
-tool is unavailable.
+An answer through the question tool counts as the user's reply for `planvil answer`, so you
+can keep working in the same turn. After asking in chat, the user's next message is the
+reply.
 
 ## Rules
 
@@ -97,6 +99,14 @@ If it fails with one of these codes, resolve it and rerun:
   which branch feature branches are cut from; rerun with `--base <branch>`.
 - `NEEDS_BRANCH`: ask with AskUserQuestion for the feature branch name (and what the feature
   is, if the user has not said), offering names that follow the repo's branch pattern.
+- `GIT_SANDBOXED`: the host's sandbox keeps `.git` read-only (Codex does by default), so
+  planvil cannot create, switch or rename branches. Rerun the same command with escalated
+  permissions, so the user approves it once; in Codex, request to run it outside the sandbox.
+  Never work around it in another way.
+- `HOOKS_NOT_ACTIVE`: the host is not running planvil's hooks, so the run would not be
+  enforced. Tell the user exactly what the message says. In Codex: restart `codex` and choose
+  "Trust all and continue" when it asks to review hooks, or use `/hooks`. Do not continue
+  without the hooks.
 - `NEEDS_CLEAN_WORKTREE`: there are uncommitted changes. Ask with AskUserQuestion, listing
   the files in the question: "Commit them (Recommended)", "I'll handle it myself", "Cancel".
   - **Commit them:** stage exactly the listed files (`git add <files>`), commit with a short

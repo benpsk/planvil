@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use planvil::hooks::{self, HookEvent};
+use planvil::hooks::{self, HookEvent, Host};
 use planvil::ops::{self, Control, OpsError, StartArgs};
 use planvil::state::QuestionKind;
-use planvil::{doctor, install, report};
+use planvil::{doctor, heartbeat, install, install_codex, report};
 
 /// Exit code when the agent must ask the user something and rerun.
 const EXIT_NEEDS_INPUT: u8 = 3;
@@ -92,11 +92,17 @@ enum Cmd {
     Doctor,
     /// Install the Claude Code plugin (skill and hooks) for this binary.
     Install {
+        /// Agent host: claude or codex.
+        #[arg(long, default_value = "claude")]
+        host: String,
+        /// Claude Code scope (user, project, local).
         #[arg(long, default_value = "user")]
         scope: String,
     },
-    /// Remove the Claude Code plugin installed by `planvil install`.
+    /// Remove the plugin installed by `planvil install`.
     Uninstall {
+        #[arg(long, default_value = "claude")]
+        host: String,
         #[arg(long, default_value = "user")]
         scope: String,
     },
@@ -127,11 +133,31 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         }
-        Cmd::Install { scope } => print_plain(install::install(&scope)),
-        Cmd::Uninstall { scope } => print_plain(install::uninstall(&scope)),
+        Cmd::Install { host, scope } => print_plain(match host.as_str() {
+            "claude" => install::install(&scope),
+            "codex" => install_codex::install(),
+            other => Err(format!("unknown host `{other}` (claude, codex)")),
+        }),
+        Cmd::Uninstall { host, scope } => print_plain(match host.as_str() {
+            "claude" => install::uninstall(&scope),
+            "codex" => install_codex::uninstall(),
+            other => Err(format!("unknown host `{other}` (claude, codex)")),
+        }),
+        Cmd::Start { .. } if heartbeat::in_agent_shell() && !heartbeat::fresh(heartbeat::FRESH) => {
+            print_ops(Err(OpsError::NeedsInput {
+                code: "HOOKS_NOT_ACTIVE",
+                message: HOOKS_NOT_ACTIVE.into(),
+            }))
+        }
         other => print_ops(run_ops(other, &cwd)),
     }
 }
+
+/// Why a run would be unenforced, and how the user fixes it.
+const HOOKS_NOT_ACTIVE: &str = "planvil's hooks did not run for this command, so a run would not be enforced. \
+     In Codex: the hooks need trust once. Ask the user to restart `codex` and choose \"Trust all and \
+     continue\" (or review them with /hooks). In Claude Code: check that the planvil plugin is enabled \
+     (/plugin) and restart. Then try again";
 
 fn run_ops(cmd: Cmd, cwd: &Path) -> ops::Result<String> {
     match cmd {
@@ -196,22 +222,44 @@ fn run_ops(cmd: Cmd, cwd: &Path) -> ops::Result<String> {
     }
 }
 
-/// Set by Claude Code in the environment of its Bash tool.
-const CLAUDE_SHELL_MARKER: &str = "CLAUDECODE";
-
 /// User controls refuse to run from Claude Code's shell, where the agent could run them.
 /// Inside Claude Code the user types `planvil <action>` as a message instead.
 fn user_control(cwd: &Path, action: Control, name: &str) -> ops::Result<String> {
-    if std::env::var_os(CLAUDE_SHELL_MARKER).is_some() {
+    if heartbeat::in_agent_shell() {
         return Err(OpsError::Refused(format!(
-            "`planvil {name}` is a user action and does not run from Claude Code's shell. Type \
-             `planvil {name}` as a message in Claude Code, or run it in a terminal outside Claude Code."
+            "`planvil {name}` is a user action and does not run from the agent's shell. Type \
+             `planvil {name}` as a message, or run it in a terminal outside the agent."
         )));
     }
     ops::control(cwd, action)
 }
 
+/// A git write refused by the agent host's sandbox (Codex keeps `.git` read-only).
+fn sandboxed_git(e: &OpsError) -> bool {
+    let OpsError::Git(planvil::git::GitError::Failed { stderr, .. }) = e else {
+        return false;
+    };
+    [
+        "Read-only file system",
+        "index.lock",
+        "Operation not permitted",
+    ]
+    .iter()
+    .any(|m| stderr.contains(m))
+}
+
+const GIT_SANDBOXED: &str = "the agent's sandbox keeps .git read-only, so planvil cannot create, switch or rename \
+     branches from here. Rerun this exact command with escalated permissions (request approval to run it \
+     outside the sandbox), or ask the user to run it in their own terminal";
+
 fn print_ops(result: ops::Result<String>) -> ExitCode {
+    let result = match result {
+        Err(e) if sandboxed_git(&e) => Err(OpsError::NeedsInput {
+            code: "GIT_SANDBOXED",
+            message: format!("{GIT_SANDBOXED} ({e})"),
+        }),
+        other => other,
+    };
     match result {
         Ok(text) => {
             println!("{text}");
@@ -243,14 +291,14 @@ fn print_plain(result: Result<String, String>) -> ExitCode {
 
 /// Hooks always exit 0 and answer in JSON; a panic still yields an explicit answer.
 fn run_hook(host: &str, event: &str, cwd: &Path) -> ExitCode {
-    let Some(event) = HookEvent::parse(event).filter(|_| host == "claude") else {
-        eprintln!("planvil: unknown hook `{host} {event}` (supported host: claude)");
+    let (Some(host), Some(event)) = (Host::parse(host), HookEvent::parse(event)) else {
+        eprintln!("planvil: unknown hook `{host} {event}` (hosts: claude, codex)");
         return ExitCode::FAILURE;
     };
     let mut stdin = String::new();
     let _ = std::io::stdin().read_to_string(&mut stdin);
     panic::set_hook(Box::new(|_| {}));
-    let output = panic::catch_unwind(AssertUnwindSafe(|| hooks::run(event, &stdin, cwd)))
+    let output = panic::catch_unwind(AssertUnwindSafe(|| hooks::run(host, event, &stdin, cwd)))
         .unwrap_or_else(|_| hooks::failure_output(event, "internal panic"));
     if let Some(json) = output {
         println!("{json}");

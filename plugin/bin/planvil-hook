@@ -3,6 +3,7 @@
 # no planvil run can exist, so there is nothing to enforce and the hook stays silent
 # (apart from a one-line notice at session start).
 event="$1"
+host="${2:-claude}"
 
 find_planvil() {
     for candidate in \
@@ -20,11 +21,11 @@ find_planvil() {
 }
 
 if bin=$(find_planvil); then
-    exec "$bin" hook claude "$event"
+    exec "$bin" hook "$host" "$event"
 fi
 
 cat > /dev/null
 if [ "$event" = "session-start" ]; then
-    printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"The planvil plugin is installed, but the planvil binary is not. If the user runs /planvil:planvil, install the binary first as the planvil skill describes."}}'
+    printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"The planvil plugin is installed, but the planvil binary is not. If the user runs the planvil skill, install the binary first as the skill describes."}}'
 fi
 exit 0

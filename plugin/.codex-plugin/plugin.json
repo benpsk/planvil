@@ -1,0 +1,16 @@
+{
+  "name": "planvil",
+  "version": "0.1.1",
+  "description": "Enforced feature workflow: feature, audit, plan, decide, implement, validate, repair, done. Hooks gate each stage; the planvil binary records evidence.",
+  "keywords": [
+    "workflow",
+    "planning",
+    "verification",
+    "hooks"
+  ],
+  "hooks": "./hooks/codex-hooks.json",
+  "interface": {
+    "displayName": "planvil",
+    "shortDescription": "Enforced feature workflow with stage gates and recorded verification evidence."
+  }
+}
