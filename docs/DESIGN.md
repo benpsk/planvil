@@ -395,3 +395,37 @@ Inherent limits that remain, by design:
 - A completed run is not re-checked if the code changes after Done; start a new run.
 - If `planvil verify` itself is killed, its process groups survive until stopped; the next verification detects them and refuses to run (it never kills a recorded ID itself).
 - Qualitative (manual) observations are not supported; every criterion needs an automated check or scenario.
+
+## 17. Codex CLI adapter
+
+Tested host: **Codex CLI 0.164.0** (researched against the 0.163.0 source), Linux.
+
+| Shared semantic | Codex event / mechanism | Status |
+| --- | --- | --- |
+| Pre-action check | `PreToolUse`; `Bash` → shell policy; `apply_patch` → every added, updated, deleted or moved file checked as a write; unreadable patch denied | Supported |
+| Observed result / user answer | `PostToolUse` on `Bash|request_user_input` | Supported |
+| User input and controls | `UserPromptSubmit` | Supported |
+| Attempted completion | `Stop` with `decision: block`; no host loop cap, so `max_stop_continuations` bounds it | Supported |
+| Session start | `SessionStart` context | Supported |
+| Hook trust | Required once, and again after each plugin update; `planvil start` refuses with `HOOKS_NOT_ACTIVE` when no planvil hook ran just before it (heartbeat) | Enforced fail-safe |
+| Hook failure | Fails open (no `onFailure`); planvil denies on its own errors | Known gap |
+| Git writes in the sandbox | `.git` is read-only in `workspace-write`; `GIT_SANDBOXED` tells the agent to request escalation | Supported, needs one approval |
+| Agent-shell marker | `CODEX_CI=1` (user controls refuse to run there) | Supported |
+| Questions | `request_user_input` only in some modes; otherwise numbered options in chat | Partial |
+
+Packaging: `plugin/.codex-plugin/plugin.json` names `hooks/codex-hooks.json`. Codex runs hook
+commands as shell strings and ignores unknown fields, so it must never load the Claude hooks
+file (which uses `args`).
+
+Real-host evidence (codexB 0.164.0, `codex exec` with persisted trust, no bypass flags):
+
+- **Untrusted hooks:** `start` refused with `HOOKS_NOT_ACTIVE`.
+- **Trusted hooks:** `start` passed.
+- **Read-only `.git`:** `GIT_SANDBOXED` was reported.
+- **`apply_patch` to source before the plan:** blocked, and the reason was shown to the agent.
+- **Two full runs through the skill:** both completed with passing evidence.
+- **Plugin re-add:** the hooks reported Failed until they were re-trusted.
+- **Failure loop:** not exercised on Codex. The agent ran the project check by hand during
+  Implement and got the code right before `planvil verify`. The loop logic is the shared core,
+  already proven in tests and on Claude Code.
+

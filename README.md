@@ -44,6 +44,30 @@ cargo install --path . && planvil install
 
 </details>
 
+## Codex CLI
+
+The same repository is also a Codex plugin (`.codex-plugin/plugin.json`, with its own hooks
+file).
+
+```sh
+codex plugin marketplace add benpsk/planvil
+codex plugin add planvil@planvil
+```
+
+Then start `codex`. When it asks to review hooks, choose **Trust all and continue** (or use
+`/hooks`). Codex runs plugin hooks only after you trust them, and again **after every plugin
+update**. Until then, `planvil start` refuses to begin a run (`HOOKS_NOT_ACTIVE`), so nothing
+runs unenforced. Invoke the skill as `$planvil:planvil sp20/mcp`.
+
+Differences from Claude Code:
+
+- **Branch changes.** Codex's default sandbox keeps `.git` read-only, so creating, switching
+  or renaming branches asks you to approve the command once (`GIT_SANDBOXED`).
+- **Questions.** They arrive as numbered options in chat; Codex's question tool is only
+  available in some modes.
+- **Hook failures.** A failing Codex hook does not block on its own (there is no
+  `onFailure: block`); planvil's own errors still deny.
+
 ## Use
 
 Everything happens in the Claude Code chat:
@@ -223,8 +247,7 @@ state is not signed. Whether a reply counts as `--approved` is the agent's readi
 you said; your verbatim words are recorded next to it, and the transcript is the source of
 truth. planvil makes skipping steps hard and visible, not impossible.
 
-Only Claude Code is supported. The core is host-independent, so a Codex adapter can be added
-later.
+Claude Code and Codex CLI are supported, through one shared core and a thin adapter per host.
 
 ## Uninstall
 
