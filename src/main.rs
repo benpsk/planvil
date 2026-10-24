@@ -46,6 +46,11 @@ enum Cmd {
         #[command(subcommand)]
         action: SetupAction,
     },
+    /// Rename the current run's branch and move its feature folder to match.
+    Rename {
+        /// The new branch name, e.g. refactor/tailwind-ui-components.
+        new_branch: String,
+    },
     /// Show stage, status, unmet gate items, and the next action.
     Status,
     /// Check the current stage's gate and move to the next stage.
@@ -150,6 +155,7 @@ fn run_ops(cmd: Cmd, cwd: &Path) -> ops::Result<String> {
         Cmd::Setup {
             action: SetupAction::Apply,
         } => ops::apply_setup(cwd),
+        Cmd::Rename { new_branch } => ops::rename(cwd, &new_branch),
         Cmd::Status => ops::status(cwd),
         Cmd::Advance => ops::advance(cwd),
         Cmd::Ask {

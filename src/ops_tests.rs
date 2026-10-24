@@ -586,3 +586,52 @@ fn repair_hint_for_feature_reflects_whether_it_is_still_confirmed() {
     let out = status(r.root()).unwrap();
     assert!(out.contains("changed since the user confirmed"), "{out}");
 }
+
+#[test]
+fn rename_moves_branch_folder_and_run_without_losing_progress() {
+    let r = started();
+    confirm_feature(&r);
+    advance(r.root()).unwrap();
+    let out = crate::ops::rename(r.root(), "refactor/greeting").unwrap();
+    assert!(
+        out.contains("renamed `sp20/greet` → `refactor/greeting`"),
+        "{out}"
+    );
+    assert_eq!(
+        git(r.root(), &["symbolic-ref", "--short", "HEAD"]),
+        "refactor/greeting"
+    );
+    let new_dir = r.root().join("planvil/refactor-greeting");
+    assert!(new_dir.join(docs::FEATURE).exists());
+    assert!(!r.feature().exists());
+    let s = Workspace::current(r.root())
+        .unwrap()
+        .unwrap()
+        .peek()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (s.branch.as_str(), s.feature_id.as_str(), s.stage),
+        ("refactor/greeting", "refactor-greeting", Stage::Audit)
+    );
+    // FEATURE.md was not edited, so it is still confirmed and nothing rewinds.
+    assert!(
+        !status(r.root())
+            .unwrap()
+            .contains("changed since the user confirmed")
+    );
+}
+
+#[test]
+fn rename_refuses_an_existing_branch() {
+    let r = started();
+    git(r.root(), &["branch", "taken"]);
+    let err = crate::ops::rename(r.root(), "taken")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("already exists"), "{err}");
+    assert_eq!(
+        git(r.root(), &["symbolic-ref", "--short", "HEAD"]),
+        "sp20/greet"
+    );
+}

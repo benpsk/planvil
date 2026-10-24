@@ -54,6 +54,7 @@ Everything happens in the Claude Code chat:
 | `/planvil:planvil sp20/mcp docs/spec.md` | Start from an existing spec file |
 | `/planvil:planvil` | Resume this branch's run |
 | `/planvil:planvil init` | Discover how this project runs and is checked, without a feature (run again to re-discover) |
+| `/planvil:planvil rename refactor/new-name` | Rename the run's branch; the folder, docs, evidence and progress move with it |
 | `/planvil:planvil status` | Stage, what is missing, and the next step |
 | `/planvil:planvil report` | The completion or blocked report |
 | `/planvil:planvil doctor` | Check the installation and the project config |

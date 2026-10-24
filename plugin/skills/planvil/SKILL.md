@@ -32,6 +32,7 @@ do it and come back. Give 2–4 concrete options, put your recommendation first 
 | Material decision (Decide stage) | The real alternatives, each with its consequence in `description` |
 | Install the planvil program | "Install it now (Recommended)", "Not now" |
 | Uncommitted changes block a branch switch | "Commit them (Recommended)", "I'll handle it myself", "Cancel" |
+| Rename the run's branch | 2–3 better names following the repo's pattern, plus "Keep the current name" |
 
 An answer to AskUserQuestion counts as the user's reply for `planvil answer`, so you can keep
 working in the same turn. Only fall back to asking in chat (and ending your turn) if the
@@ -78,6 +79,7 @@ needed. If the user declines, stop.
 | *(none)* | Resume this branch's run (`planvil start`), or ask for a branch name |
 | `<branch> [spec.md]` | Start or resume a feature (section 2) |
 | `init` | Discover the project setup without a feature: `planvil start --setup`, then do the **Setup** stage. Running it again re-discovers the setup |
+| `rename <new-branch>` | Rename this run's branch: `planvil rename <new-branch>` |
 | `status` | Run `planvil status` and show the output |
 | `report` | Run `planvil report` and show it; if the run is not finished, show why |
 | `doctor` | Run `planvil doctor`; explain any ✗ lines and how to fix them |
@@ -103,6 +105,12 @@ If it fails with one of these codes, resolve it and rerun:
   - **Cancel:** stop.
 
   Only commit when the user chose it. Never stash, reset or discard their work.
+
+**Renaming.** If the user wants a different branch name at any point (or the name no longer
+fits the feature), offer names with AskUserQuestion and run `planvil rename <new-branch>`. It
+renames the git branch, moves the feature folder with all docs and evidence, and keeps the
+stage, confirmations and approvals. Never cancel and restart a run just to rename it, and
+never rename with git directly.
 
 When resuming, run `planvil status` and re-read the feature folder and the relevant code
 before acting. Do not assume an interrupted verification passed.

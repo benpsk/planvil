@@ -218,6 +218,7 @@ pub fn init(cwd: &Path) -> Result<String> {
 mod gates;
 mod guide;
 mod questions;
+mod rename;
 mod setup;
 mod start;
 mod validate;
@@ -225,6 +226,7 @@ mod validate;
 pub use gates::advance;
 pub use guide::{describe, next_action, status};
 pub use questions::{answer, ask};
+pub use rename::rename;
 pub use setup::{apply_setup, check as setup_check};
 pub use start::{StartArgs, start};
 pub use validate::{time_exceeded, verify};

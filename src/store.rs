@@ -86,6 +86,16 @@ pub fn lock(feature_dir: &Path, branch: &str, timeout: Duration) -> Result<RunLo
 }
 
 impl RunLock {
+    /// The same lock after the run's folder was moved and its branch renamed. The open
+    /// lock file moves with the folder, so the lock is never released in between.
+    pub fn relocated(self, feature_dir: &Path, branch: &str) -> RunLock {
+        RunLock {
+            _file: self._file,
+            feature_dir: feature_dir.to_path_buf(),
+            branch: branch.to_string(),
+        }
+    }
+
     /// Read state for a change. `Ok(None)` when no run exists yet.
     pub fn load(&self) -> Result<Option<RunState>, StoreError> {
         read_state(&self.feature_dir, &self.branch)

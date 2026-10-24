@@ -156,6 +156,21 @@ fn parse_porcelain_z(out: &str) -> Vec<String> {
     paths
 }
 
+/// Rename a local branch.
+pub fn rename_branch(root: &Path, from: &str, to: &str) -> Result<(), GitError> {
+    git_ok(root, &["branch", "-m", from, to]).map(|_| ())
+}
+
+/// The branch's upstream (for example `origin/sp20/mcp`), if it has one.
+pub fn upstream(root: &Path, branch: &str) -> Result<Option<String>, GitError> {
+    let spec = format!("{branch}@{{upstream}}");
+    let out = git(root, &["rev-parse", "--abbrev-ref", &spec])?;
+    Ok(out
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
+}
+
 pub fn checkout(root: &Path, branch: &str) -> Result<(), GitError> {
     git_ok(root, &["checkout", "--quiet", branch]).map(|_| ())
 }

@@ -366,3 +366,24 @@ fn writes_into_a_run_repo_from_another_cwd_are_enforced() {
     let out = run(HookEvent::PreTool, &payload.to_string(), elsewhere.path());
     assert!(is_deny(&out), "{out:?}");
 }
+
+#[test]
+fn enforcement_follows_a_renamed_run() {
+    let fx = started();
+    ops::rename(fx.root(), "refactor/x").unwrap();
+    assert!(is_deny(&fx.pre(
+        "Write",
+        json!({ "file_path": fx.root().join("README.md") })
+    )));
+    assert_eq!(
+        fx.pre(
+            "Write",
+            json!({ "file_path": fx.root().join("planvil/refactor-x/FEATURE.md") })
+        ),
+        None
+    );
+    assert_eq!(
+        fx.pre("Bash", json!({ "command": "planvil rename refactor/y" })),
+        None
+    );
+}
