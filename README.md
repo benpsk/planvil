@@ -239,7 +239,8 @@ cargo test                                   # unit, integration and hook-fixtur
 cargo clippy --all-targets -- -D warnings
 ```
 
-Releases: push a `vX.Y.Z` tag. cargo-dist (`.github/workflows/release.yml`) builds Linux
+Releases: bump `version` in `Cargo.toml` and `plugin/.claude-plugin/plugin.json` (a test checks
+they match), commit, then push a matching `vX.Y.Z` tag. cargo-dist (`.github/workflows/release.yml`) builds Linux
 (musl), macOS and Windows binaries and publishes the installers.
 
 The design, requirements, compatibility matrix and test coverage are in [docs/DESIGN.md](docs/DESIGN.md).

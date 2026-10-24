@@ -280,4 +280,11 @@ mod tests {
         assert!(dir.path().join("keep.txt").exists());
         assert!(!dir.path().join("plugin").exists());
     }
+
+    #[test]
+    fn plugin_version_matches_the_crate_version() {
+        // Release tags must match both; /plugin update reads the manifest version.
+        let manifest: Value = serde_json::from_str(PLUGIN_JSON).unwrap();
+        assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
+    }
 }

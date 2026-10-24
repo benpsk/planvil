@@ -1,6 +1,6 @@
 {
   "name": "planvil",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Enforced feature workflow: feature, audit, plan, decide, implement, validate, repair, done. Hooks gate each stage; the planvil binary records evidence.",
   "license": "MIT",
   "keywords": [
