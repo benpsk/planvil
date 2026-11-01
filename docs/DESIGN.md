@@ -222,6 +222,8 @@ Stage order: **(Setup →) Feature → Audit → Plan → Decide → Implement �
 - **Verify** (`planvil verify`) runs preflight, the project's verify script (written and approved once in Setup, installed at `verify.script`, protected during runs) and any project checks: does the whole app still work? It refuses to run on code that differs from the validated fingerprint and sends the run back to Validate (`Revalidate`, which keeps the repair budget). A pass completes the run.
 - Both failures go through the same repair loop and budget. `known_failures` apply only in Verify. The failure signature is prefixed with the stage, so a validate failure and a verify failure never count as identical.
 
+**Start on the current branch (`--here`).** `planvil start <feature> --here` skips the branch step: the run stays on the checked-out branch, keeps uncommitted work (recorded in `baseline_dirty`), and uses `<docs_root>/<feature>/`. An index at `<docs_root>/.planvil/branches.json` (protected like all `.planvil` state) maps the branch to that folder so hooks and commands find the run from the current branch. A branch has one unfinished run at a time; a branch-owned run on the same branch later releases a finished `--here` entry. The run's `base_branch` is the commit HEAD was on at start, so the report's diff covers only the run. `rename` refuses `--here` runs because they do not own their branch.
+
 ### Layout
 
 One flat folder per branch: `<docs_root>/<branch>/`, with every `/` in the branch name written as `-`. No nested folders.
@@ -289,7 +291,7 @@ Trade-off accepted: slower to write than TypeScript, and releases need per-platf
 
 | Command | Called by | Purpose |
 | --- | --- | --- |
-| `planvil start [branch] [spec.md]` | skill | Start sequence (§14) and run activation |
+| `planvil start [branch] [--here] [spec.md]` | skill | Start sequence (§14) and run activation; `--here` stays on the current branch |
 | `planvil status` | user / skill | Show stage, status, next action, blockers |
 | `planvil advance` | skill | Check the current gate; move to the next stage if it passes |
 | `planvil answer <id> <text>` | skill | Record a user answer to an open question |

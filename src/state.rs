@@ -221,6 +221,10 @@ pub struct RunState {
     /// The validation pass that Verify builds on. Verify requires the same code.
     #[serde(default)]
     pub validated: Option<VerifyRecord>,
+    /// Started with `--here`: the run uses the branch that was checked out instead of its
+    /// own, so the feature folder is named after the feature, not the branch.
+    #[serde(default)]
+    pub on_current_branch: bool,
     /// Hash of the project's verify script as the run knows it. Verify blocks if the file
     /// changes during the run; a user `resume` accepts the current file.
     #[serde(default)]
@@ -272,6 +276,7 @@ impl RunState {
             setup_only: false,
             last_verify: None,
             validated: None,
+            on_current_branch: false,
             verify_script_hash: None,
             stop_guard: StopGuard::default(),
             failed_steps: std::collections::BTreeMap::new(),
@@ -301,7 +306,12 @@ impl RunState {
     /// Invariants a loaded state must satisfy. A hand-edited file can break them even
     /// when it deserializes.
     pub fn validate(&self) -> Result<(), String> {
-        let folder = crate::layout::branch_to_folder(&self.branch).map_err(|e| e.to_string())?;
+        let expected = if self.on_current_branch {
+            &self.feature_id
+        } else {
+            &self.branch
+        };
+        let folder = crate::layout::branch_to_folder(expected).map_err(|e| e.to_string())?;
         if folder != self.feature_id {
             return Err(format!(
                 "feature_id `{}` does not match branch `{}`",
@@ -356,6 +366,22 @@ mod tests {
             ..sample()
         };
         assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn run_on_current_branch_is_named_after_its_feature() {
+        let s = RunState {
+            feature_id: "payment-retry".into(),
+            branch: "main".into(),
+            on_current_branch: true,
+            ..sample()
+        };
+        assert_eq!(s.validate(), Ok(()));
+        let bad = RunState {
+            feature_id: "a/b".into(),
+            ..s
+        };
+        assert!(bad.validate().is_err());
     }
 
     #[test]

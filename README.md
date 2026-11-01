@@ -79,6 +79,7 @@ Everything happens in the Claude Code chat:
 |---|---|
 | `/planvil:planvil sp20/mcp` | Start a feature on branch `sp20/mcp`, or resume it |
 | `/planvil:planvil sp20/mcp docs/spec.md` | Start from an existing spec file |
+| `/planvil:planvil payment-retry --here` | Start a feature on the **current** branch: no branch is created or switched |
 | `/planvil:planvil` | Resume this branch's run |
 | `/planvil:planvil init` | Discover how this project runs and is checked, without a feature (run again to re-discover) |
 | `/planvil:planvil rename refactor/new-name` | Rename the run's branch; the folder, docs, evidence and progress move with it |
@@ -97,6 +98,12 @@ discovers how the project runs and you approve it once. After that, every featur
 2. Creates `planvil/<branch-with-dashes>/` (`sp20/mcp` → `planvil/sp20-mcp/`) and adds
    `/planvil/` to `.gitignore`.
 3. Writes the document templates: FEATURE, AUDIT, PLAN, DECISIONS, HANDOFF and `validate.json`.
+
+With `--here`, step 1 is skipped: the run stays on the branch you are on, your uncommitted
+work is left as it is (and listed as yours in the report), and the folder is named after the
+feature (`payment-retry` → `planvil/payment-retry/`). `/planvil/` is added to that branch's
+`.gitignore`. A branch has one unfinished run at a time, and a `--here` run cannot be renamed
+because it does not own its branch.
 
 Then the agent works through the stages. You are asked only for things that are yours to
 decide: confirming FEATURE.md, approving the setup, business rules, and destructive or

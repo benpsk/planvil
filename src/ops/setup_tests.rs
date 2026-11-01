@@ -13,6 +13,7 @@ fn fresh() -> tempfile::TempDir {
         dir.path(),
         &StartArgs {
             setup_only: false,
+            here: false,
             branch: Some("sp20/x"),
             spec: None,
             base: Some("main"),
@@ -164,6 +165,7 @@ fn init_runs_setup_only_and_completes_without_a_feature() {
         dir.path(),
         &StartArgs {
             setup_only: true,
+            here: false,
             branch: None,
             spec: None,
             base: None,
@@ -198,6 +200,7 @@ fn init_refuses_while_a_run_is_in_progress() {
         dir.path(),
         &StartArgs {
             setup_only: false,
+            here: false,
             branch: Some("sp20/x"),
             spec: None,
             base: Some("main"),
@@ -208,6 +211,7 @@ fn init_refuses_while_a_run_is_in_progress() {
         dir.path(),
         &StartArgs {
             setup_only: true,
+            here: false,
             branch: None,
             spec: None,
             base: None,

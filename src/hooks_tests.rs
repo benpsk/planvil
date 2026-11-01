@@ -54,6 +54,7 @@ fn started() -> Fx {
         dir.path(),
         &StartArgs {
             setup_only: false,
+            here: false,
             branch: Some("sp20/x"),
             spec: None,
             base: Some("main"),
@@ -396,5 +397,33 @@ fn enforcement_follows_a_renamed_run() {
     assert_eq!(
         fx.pre("Bash", json!({ "command": "planvil rename refactor/y" })),
         None
+    );
+}
+
+#[test]
+fn a_here_run_is_enforced_on_the_current_branch() {
+    let dir = crate::git::testing::repo_with_setup();
+    start(
+        dir.path(),
+        &StartArgs {
+            setup_only: false,
+            here: true,
+            branch: Some("payment-retry"),
+            spec: None,
+            base: None,
+        },
+    )
+    .unwrap();
+    let fx = Fx { dir };
+    let src = fx.pre("Edit", json!({ "file_path": "src/a.go" }));
+    assert!(is_deny(&src), "{src:?}");
+    let doc = fx.root().join("planvil/payment-retry/FEATURE.md");
+    let ok = fx.pre("Edit", json!({ "file_path": doc.display().to_string() }));
+    assert!(!is_deny(&ok), "{ok:?}");
+    let index = fx.root().join("planvil/.planvil/branches.json");
+    let tamper = fx.pre("Write", json!({ "file_path": index.display().to_string() }));
+    assert!(
+        is_deny(&tamper),
+        "the branch index is planvil's own state: {tamper:?}"
     );
 }

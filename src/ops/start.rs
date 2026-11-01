@@ -1,4 +1,7 @@
 //! `planvil start`: branch, feature folder, templates, and run activation.
+//!
+//! By default a run owns a feature branch. With `--here` it stays on the current branch;
+//! see `here.rs`.
 
 use std::path::{Path, PathBuf};
 
@@ -15,6 +18,8 @@ use crate::util::now_secs;
 pub struct StartArgs<'a> {
     /// Only (re)discover the project setup on the current branch; no feature.
     pub setup_only: bool,
+    /// Stay on the current branch: `branch` names the feature, not a branch to create.
+    pub here: bool,
     pub branch: Option<&'a str>,
     pub spec: Option<&'a Path>,
     pub base: Option<&'a str>,
@@ -28,6 +33,19 @@ pub fn start(cwd: &Path, args: &StartArgs) -> Result<String> {
         .and_then(|cur| unfinished_run(&root, cur));
     if args.setup_only {
         return start_setup_only(&root, current.as_deref(), current_run.as_ref());
+    }
+    // Resuming a `--here` run keeps it on its branch and in its own folder.
+    let resumes_here = current_run.as_ref().is_some_and(|r| r.on_current_branch)
+        && args.branch.is_none_or(|b| current.as_deref() == Some(b));
+    if args.here || resumes_here {
+        let feature = if args.here { args.branch } else { None };
+        return super::here::start_here(
+            &root,
+            current.as_deref(),
+            current_run.as_ref(),
+            feature,
+            args.spec,
+        );
     }
     let branch = choose_branch(args.branch, current.as_deref(), current_run.as_ref())?;
     layout::branch_to_folder(&branch)?;
@@ -49,11 +67,19 @@ pub fn start(cwd: &Path, args: &StartArgs) -> Result<String> {
             .base_branch
             .as_deref(),
     )?;
+    let target = Workspace::for_branch(&root, &branch)?;
+    if let Some(other) = super::here::other_owner(&target.feature_dir, &branch)? {
+        return Err(refused(format!(
+            "{} belongs to a run on branch `{other}` (started with --here); pick another branch name",
+            target.rel(&target.feature_dir)
+        )));
+    }
     let mut notes = Vec::new();
     // Switch first: planvil's own config and .gitignore edits must not count as user work.
     if current.as_deref() != Some(branch.as_str()) {
         notes.push(switch_branch(&root, &branch, &base)?);
     }
+    super::here::release_finished(&root, &branch)?;
     // Reload: the target branch may carry its own .planvil.json.
     let mut ws = Workspace::for_branch(&root, &branch)?;
     let baseline = git::dirty_paths(&ws.repo_root, &ws.config.docs_root)?;
@@ -67,7 +93,8 @@ pub fn start(cwd: &Path, args: &StartArgs) -> Result<String> {
     ws.feature_dir = create_feature_dir(&ws, &branch)?;
     notes.extend(prepare_folder(&ws, &branch, args.spec)?);
 
-    let state = activate(&ws, &branch, &base, baseline, &mut notes)?;
+    let folder = layout::branch_to_folder(&branch)?;
+    let state = activate(&ws, &folder, &base, baseline, &mut notes, false)?;
     let list: Vec<String> = notes.iter().map(|n| format!("- {n}")).collect();
     Ok(format!(
         "planvil run on `{branch}` (base `{base}`), folder {}\n{}\n\n{}",
@@ -90,6 +117,7 @@ fn start_setup_only(
             run.stage
         )));
     }
+    super::here::release_finished(root, branch)?;
     let mut ws = Workspace::for_branch(root, branch)?;
     ws.feature_dir = create_feature_dir(&ws, branch)?;
     let mut notes = prepare_folder(&ws, branch, None)?;
@@ -202,13 +230,14 @@ fn switch_branch(root: &Path, branch: &str, base: &str) -> Result<String> {
     Ok(format!("created branch `{branch}` from `{start_point}`"))
 }
 
-/// Create the feature folder one level inside the (possibly symlinked) docs root, refusing
-/// a folder that resolves anywhere else. Checked before anything is written into it.
-fn create_feature_dir(ws: &Workspace, branch: &str) -> Result<PathBuf> {
+/// Create the feature folder for `name` (a branch or `--here` feature name) one level inside
+/// the (possibly symlinked) docs root, refusing a folder that resolves anywhere else.
+/// Checked before anything is written into it.
+pub(super) fn create_feature_dir(ws: &Workspace, name: &str) -> Result<PathBuf> {
     let docs_root = ws.repo_root.join(&ws.config.docs_root);
     std::fs::create_dir_all(&docs_root)?;
     let docs_root = docs_root.canonicalize()?;
-    let target = docs_root.join(layout::branch_to_folder(branch)?);
+    let target = docs_root.join(layout::branch_to_folder(name)?);
     if !target.exists() {
         std::fs::create_dir(&target)?;
     }
@@ -224,7 +253,11 @@ fn create_feature_dir(ws: &Workspace, branch: &str) -> Result<PathBuf> {
 }
 
 /// Gitignore, templates and the optional spec copy. Returns notes for the user.
-fn prepare_folder(ws: &Workspace, branch: &str, spec: Option<&Path>) -> Result<Vec<String>> {
+pub(super) fn prepare_folder(
+    ws: &Workspace,
+    branch: &str,
+    spec: Option<&Path>,
+) -> Result<Vec<String>> {
     let mut notes = Vec::new();
     if ws.config.docs_gitignored && ensure_gitignored(&ws.repo_root, &ws.config.docs_root)? {
         notes.push(format!("added `/{}/` to .gitignore", ws.config.docs_root));
@@ -251,13 +284,15 @@ fn prepare_folder(ws: &Workspace, branch: &str, spec: Option<&Path>) -> Result<V
     Ok(notes)
 }
 
-/// Resume the branch's unfinished run, or archive a finished one and start fresh.
-fn activate(
+/// Resume the folder's unfinished run, or archive a finished one and start fresh.
+/// `on_current_branch` marks a `--here` run.
+pub(super) fn activate(
     ws: &Workspace,
-    branch: &str,
+    feature_id: &str,
     base: &str,
     baseline: Vec<String>,
     notes: &mut Vec<String>,
+    on_current_branch: bool,
 ) -> Result<RunState> {
     let lock = ws.lock()?;
     let state = match lock.load()? {
@@ -280,9 +315,9 @@ fn activate(
             }
             let now = now_secs();
             let run_id = format!("{now:x}-{:x}", std::process::id());
-            let folder = layout::branch_to_folder(branch)?;
             RunState {
                 baseline_dirty: baseline,
+                on_current_branch,
                 verify_script_hash: ws.verify_script_hash()?,
                 // The first run in a repository discovers how to run and check it.
                 stage: if ws.config.verify.is_none() {
@@ -290,7 +325,14 @@ fn activate(
                 } else {
                     Stage::Feature
                 },
-                ..RunState::new(run_id, folder, branch, base, ws.config.limits(), now)
+                ..RunState::new(
+                    run_id,
+                    feature_id,
+                    &ws.branch,
+                    base,
+                    ws.config.limits(),
+                    now,
+                )
             }
         }
     };

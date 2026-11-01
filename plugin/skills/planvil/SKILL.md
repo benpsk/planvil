@@ -81,7 +81,8 @@ needed. If the user declines, stop.
 | Argument | What to do |
 |---|---|
 | *(none)* | Resume this branch's run (`planvil start`), or ask for a branch name |
-| `<branch> [spec.md]` | Start or resume a feature (section 2) |
+| `<branch> [spec.md]` | Start or resume a feature on its own branch (section 2) |
+| `<feature> --here [spec.md]` | Start a feature on the current branch, without creating or switching branches (section 2) |
 | `init` | Discover the project setup without a feature: `planvil start --setup`, then do the **Setup** stage. Running it again re-discovers the setup |
 | `rename <new-branch>` | Rename this run's branch: `planvil rename <new-branch>` |
 | `status` | Run `planvil status` and show the output |
@@ -95,10 +96,17 @@ needed. If the user declines, stop.
 Run `planvil start <branch>`, or `planvil start <branch> --spec <path>` when a spec file was
 given. With no branch argument, run `planvil start` to resume this branch's run.
 
+When the user adds `--here`, run `planvil start <feature> --here` (plus `--spec <path>` if
+given). The run stays on the current branch: no branch is created or switched, uncommitted
+work is left as it is, and the feature folder is named after the feature
+(`planvil/<feature>/`). There is one unfinished run per branch.
+
 If it fails with one of these codes, resolve it and rerun:
 
 - `NEEDS_BASE_BRANCH`: list candidates with `git branch -a` and ask with AskUserQuestion
   which branch feature branches are cut from; rerun with `--base <branch>`.
+- `NEEDS_FEATURE_NAME`: ask with AskUserQuestion for a short feature name (for `--here`),
+  for example `payment-retry`.
 - `NEEDS_BRANCH`: ask with AskUserQuestion for the feature branch name (and what the feature
   is, if the user has not said), offering names that follow the repo's branch pattern.
 - `GIT_SANDBOXED`: the host's sandbox keeps `.git` read-only (Codex does by default), so
@@ -122,7 +130,8 @@ If it fails with one of these codes, resolve it and rerun:
 fits the feature), offer names with AskUserQuestion and run `planvil rename <new-branch>`. It
 renames the git branch, moves the feature folder with all docs and evidence, and keeps the
 stage, confirmations and approvals. Never cancel and restart a run just to rename it, and
-never rename with git directly.
+never rename with git directly. A `--here` run does not own its branch, so it cannot be
+renamed.
 
 When resuming, run `planvil status` and re-read the feature folder and the relevant code
 before acting. Do not assume an interrupted verification passed.

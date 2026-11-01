@@ -112,6 +112,7 @@ fn started() -> Run {
         dir.path(),
         &StartArgs {
             setup_only: false,
+            here: false,
             branch: Some("sp20/greet"),
             spec: None,
             base: Some("main"),
@@ -200,6 +201,7 @@ fn start_asks_for_missing_base_and_branch() {
         dir.path(),
         &StartArgs {
             setup_only: false,
+            here: false,
             branch: Some("x/y"),
             spec: None,
             base: None,
@@ -217,6 +219,7 @@ fn start_asks_for_missing_base_and_branch() {
         dir.path(),
         &StartArgs {
             setup_only: false,
+            here: false,
             branch: None,
             spec: None,
             base: Some("main"),
@@ -240,6 +243,7 @@ fn start_refuses_to_switch_branches_over_uncommitted_work() {
         dir.path(),
         &StartArgs {
             setup_only: false,
+            here: false,
             branch: Some("sp20/x"),
             spec: None,
             base: Some("main"),
@@ -274,6 +278,7 @@ fn start_preserves_unrelated_gitignore_and_config_keys() {
         dir.path(),
         &StartArgs {
             setup_only: false,
+            here: false,
             branch: Some("sp20/x"),
             spec: None,
             base: Some("main"),
@@ -305,6 +310,7 @@ fn start_on_an_active_run_resumes_it_and_detaches_the_session() {
         r.root(),
         &StartArgs {
             setup_only: false,
+            here: false,
             branch: None,
             spec: None,
             base: None,

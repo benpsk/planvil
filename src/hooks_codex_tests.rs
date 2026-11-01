@@ -10,6 +10,7 @@ fn started() -> tempfile::TempDir {
         dir.path(),
         &StartArgs {
             setup_only: false,
+            here: false,
             branch: Some("sp20/x"),
             spec: None,
             base: Some("main"),

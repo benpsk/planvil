@@ -29,8 +29,12 @@ struct Cli {
 enum Cmd {
     /// Start a run on a feature branch, or resume the current branch's run.
     Start {
-        /// Feature branch, e.g. sp20/mcp. Omit to resume the current branch's run.
+        /// Feature branch, e.g. sp20/mcp (with --here: the feature's name). Omit to resume the
+        /// current branch's run.
         branch: Option<String>,
+        /// Stay on the current branch instead of creating or switching to a feature branch.
+        #[arg(long, conflicts_with = "base")]
+        here: bool,
         /// Existing requirements file to seed FEATURE.md from.
         #[arg(long)]
         spec: Option<PathBuf>,
@@ -38,7 +42,7 @@ enum Cmd {
         #[arg(long)]
         base: Option<String>,
         /// Only discover (or re-discover) the project setup on the current branch.
-        #[arg(long, conflicts_with_all = ["branch", "spec"])]
+        #[arg(long, conflicts_with_all = ["branch", "spec", "here"])]
         setup: bool,
     },
     /// Setup stage: check the proposed project verification, or apply the approved one.
@@ -165,6 +169,7 @@ fn run_ops(cmd: Cmd, cwd: &Path) -> ops::Result<String> {
     match cmd {
         Cmd::Start {
             branch,
+            here,
             spec,
             base,
             setup,
@@ -172,6 +177,7 @@ fn run_ops(cmd: Cmd, cwd: &Path) -> ops::Result<String> {
             cwd,
             &StartArgs {
                 setup_only: setup,
+                here,
                 branch: branch.as_deref(),
                 spec: spec.as_deref(),
                 base: base.as_deref(),

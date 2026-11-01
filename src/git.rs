@@ -110,6 +110,15 @@ pub fn branch_exists(root: &Path, branch: &str) -> Result<bool, GitError> {
         .success())
 }
 
+/// The commit HEAD points at, or `None` in a repository without commits.
+pub fn head_commit(root: &Path) -> Result<Option<String>, GitError> {
+    let out = git(root, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])?;
+    Ok(out
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
+}
+
 pub fn rev_exists(root: &Path, rev: &str) -> Result<bool, GitError> {
     let spec = format!("{rev}^{{commit}}");
     Ok(git(root, &["rev-parse", "--verify", "--quiet", &spec])?

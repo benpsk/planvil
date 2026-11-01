@@ -174,7 +174,7 @@ fn read_raw(feature_dir: &Path) -> Result<Option<RunState>, StoreError> {
 }
 
 /// Write to a fresh temp file, sync, rename over `path`, sync the directory.
-fn write_atomic(path: &Path, body: &[u8]) -> Result<(), StoreError> {
+pub(crate) fn write_atomic(path: &Path, body: &[u8]) -> Result<(), StoreError> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

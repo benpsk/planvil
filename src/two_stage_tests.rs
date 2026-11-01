@@ -29,6 +29,7 @@ fn started_with_script() -> Run {
         root,
         &StartArgs {
             setup_only: false,
+            here: false,
             branch: Some("sp20/greet"),
             spec: None,
             base: None,

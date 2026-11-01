@@ -19,6 +19,13 @@ pub fn rename(cwd: &Path, new_branch: &str) -> Result<String> {
             "this run is finished; start a new one on the branch you want instead",
         ));
     }
+    if state.on_current_branch {
+        return Err(refused(format!(
+            "this run was started with --here, so it does not own its branch `{}`; rename the branch \
+             yourself with git if you need to",
+            ws.branch
+        )));
+    }
     if new_branch == ws.branch {
         return Err(refused(format!(
             "the branch is already called `{new_branch}`"

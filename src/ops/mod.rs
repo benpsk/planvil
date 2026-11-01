@@ -71,10 +71,16 @@ impl Workspace {
         Self::for_branch(&root, &branch).map(Some)
     }
 
+    /// Workspace for `branch`: its `--here` run's folder if the index names one, else the
+    /// folder named after the branch.
     pub fn for_branch(root: &Path, branch: &str) -> Result<Self> {
         let repo_root = root.canonicalize()?;
         let config = config::load(&repo_root)?;
-        let feature_dir = layout::feature_dir(&repo_root, &config.docs_root, branch)?;
+        let folder = here::indexed_folder(&repo_root, &config.docs_root, branch)?;
+        let feature_dir = match folder {
+            Some(f) => layout::feature_dir(&repo_root, &config.docs_root, &f)?,
+            None => layout::feature_dir(&repo_root, &config.docs_root, branch)?,
+        };
         let feature_dir = feature_dir.canonicalize().unwrap_or(feature_dir);
         Ok(Self {
             repo_root,
@@ -269,6 +275,7 @@ pub fn init(cwd: &Path) -> Result<String> {
 
 mod gates;
 mod guide;
+mod here;
 mod questions;
 mod rename;
 mod setup;
@@ -324,3 +331,7 @@ mod setup_tests;
 #[cfg(test)]
 #[path = "../two_stage_tests.rs"]
 mod two_stage_tests;
+
+#[cfg(test)]
+#[path = "../here_tests.rs"]
+mod here_tests;
