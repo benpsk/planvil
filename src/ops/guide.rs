@@ -44,7 +44,8 @@ pub fn describe(ws: &Workspace, state: &RunState) -> Result<String> {
     }
     if let Some(v) = &state.last_verify {
         out.push(format!(
-            "last verification #{}: {} (evidence {})",
+            "last {} #{}: {} (evidence {})",
+            check_noun(v.stage),
             v.run,
             if v.passed {
                 "passed".to_string()
@@ -59,7 +60,8 @@ pub fn describe(ws: &Workspace, state: &RunState) -> Result<String> {
     }
     if state.status == Status::Active {
         let problems = gate_problems(ws, state)?;
-        if !problems.is_empty() && state.stage != Stage::Validate {
+        let checking = matches!(state.stage, Stage::Validate | Stage::Verify);
+        if !problems.is_empty() && !checking {
             out.push("gate not yet met:".into());
             out.extend(problems.iter().map(|p| format!("  - {p}")));
         }
@@ -110,8 +112,11 @@ pub fn next_action(ws: &Workspace, state: &RunState) -> String {
     match state.stage {
         Stage::Setup => format!(
             "set up how this project runs and is checked (once per repository). Discover it from CI \
-             workflows, Makefile/justfile, package scripts, manifests, docker-compose and README; write \
-             {dir}/setup.proposed.json; run `planvil setup check` until it is USABLE; then \
+             workflows, Makefile/justfile, package scripts, manifests, docker-compose and README. Write \
+             {dir}/verify.proposed.sh, a script that checks the whole app (lint, types, every test) and \
+             exits 0 only when all of it passes, and {dir}/setup.proposed.json with \
+             `\"script\": \"scripts/planvil-verify.sh\"` (where it will live) plus preflight, env and app. Run \
+             `planvil setup check` until it is USABLE; then \
              `planvil ask --approve-setup \"<summary>\"` and ask with AskUserQuestion; after approval run `planvil setup apply`."
         ),
         Stage::Feature => {
@@ -131,8 +136,9 @@ pub fn next_action(ws: &Workspace, state: &RunState) -> String {
             "audit the code and write {dir}/AUDIT.md grounded in real files and symbols, then run `planvil advance`."
         ),
         Stage::Plan => format!(
-            "write {dir}/PLAN.md (steps, AC → verification map, risks) and {dir}/verify.json (a check or \
-             runtime scenario for every AC), then run `planvil advance`."
+            "write {dir}/PLAN.md (steps, AC → verification map, risks) and {dir}/{} (a check or \
+             runtime scenario for every AC), then run `planvil advance`.",
+            ws.validate_file()
         ),
         Stage::Decide => {
             let approval = if ws.config.require_plan_approval {
@@ -150,7 +156,16 @@ pub fn next_action(ws: &Workspace, state: &RunState) -> String {
             "implement the steps in {dir}/PLAN.md and keep its Status current. When done, run `planvil advance` \
              to enter validation."
         ),
-        Stage::Validate => "run `planvil verify` and wait for its result.".into(),
+        Stage::Validate => format!(
+            "run `planvil validate` and wait for its result. It runs this feature's checks and scenarios \
+             from {dir}/{}; when they pass, the run moves on to Verify.",
+            ws.validate_file()
+        ),
+        Stage::Verify => {
+            "run `planvil verify` and wait for its result. It runs the project's verify script on the \
+             whole app; when it passes, the run is done."
+                .into()
+        }
         Stage::Repair => {
             let failing = state
                 .last_verify
@@ -165,10 +180,18 @@ pub fn next_action(ws: &Workspace, state: &RunState) -> String {
             format!(
                 "verification failed ({failing}). Read the logs in {evidence}, find the root cause, update \
                  PLAN.md if the approach changes, fix the code (never weaken checks or criteria), then run \
-                 `planvil advance` and `planvil verify`."
+                 `planvil advance` and `planvil validate`."
             )
         }
         Stage::Done => "run `planvil report`.".into(),
+    }
+}
+
+fn check_noun(stage: Stage) -> &'static str {
+    if stage == Stage::Verify {
+        "verification"
+    } else {
+        "validation"
     }
 }
 
@@ -220,8 +243,18 @@ fn repair_step(ws: &Workspace, state: &RunState) -> Option<String> {
         .map(|v| format!("{dir}/{}", v.evidence_dir))
         .unwrap_or_default();
     let names: Vec<String> = failing.iter().map(|f| format!("`{f}`")).collect();
+    let stage = state
+        .last_verify
+        .as_ref()
+        .map_or(Stage::Validate, |v| v.stage);
+    let what = match stage {
+        Stage::Verify => {
+            "verification failed: the feature passed its own checks but broke the whole-app check"
+        }
+        _ => "validation failed: the feature does not meet its acceptance criteria yet",
+    };
     let cycle = format!(
-        "Repair cycle {}/{}: verification failed ({}). Evidence: {evidence}.",
+        "Repair cycle {}/{}: {what} ({}). Evidence: {evidence}.",
         state.attempts.repair_cycles,
         state.limits.max_repair_cycles,
         names.join(", ")
@@ -257,7 +290,9 @@ fn repair_step(ws: &Workspace, state: &RunState) -> Option<String> {
         Stage::Implement => {
             "Implement the fix from PLAN.md, then run `planvil advance`.".to_string()
         }
-        Stage::Setup | Stage::Validate | Stage::Repair | Stage::Done => return None,
+        Stage::Setup | Stage::Validate | Stage::Verify | Stage::Repair | Stage::Done => {
+            return None;
+        }
     };
     Some(format!("{cycle} {step}"))
 }

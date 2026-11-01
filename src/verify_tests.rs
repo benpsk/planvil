@@ -15,7 +15,7 @@ fn step(name: &str, shell: &str, criteria: &[&str]) -> Step {
 }
 
 fn plan(project: ProjectVerify, feature: FeatureVerify) -> Plan {
-    Plan::new(&project, &feature).unwrap()
+    Plan::validate(&project, &feature).unwrap()
 }
 
 fn checks_only(steps: Vec<Step>) -> Plan {
@@ -54,7 +54,7 @@ fn duplicate_names_are_rejected() {
         checks: vec![step("a", "test -d .", &[]), step("a", "test -d .", &[])],
         scenarios: vec![],
     };
-    assert!(Plan::new(&ProjectVerify::default(), &feature).is_err());
+    assert!(Plan::validate(&ProjectVerify::default(), &feature).is_err());
 }
 
 #[test]
@@ -63,7 +63,7 @@ fn scenarios_require_a_configured_app() {
         checks: vec![],
         scenarios: vec![step("s", "test -d .", &["AC-01"])],
     };
-    let err = Plan::new(&ProjectVerify::default(), &feature).unwrap_err();
+    let err = Plan::validate(&ProjectVerify::default(), &feature).unwrap_err();
     assert!(err.contains("no `verify.app`"));
 }
 
@@ -74,8 +74,8 @@ fn coverage_flags_unmapped_and_unknown_criteria() {
     assert_eq!(
         problems,
         vec![
-            "AC-02 has no check or scenario in verify.json",
-            "verify.json references unknown criterion AC-09"
+            "AC-02 has no check or scenario in validate.json",
+            "validate.json references unknown criterion AC-09"
         ]
     );
 }
@@ -169,7 +169,8 @@ fn secrets_are_redacted_from_logs() {
         ..Default::default()
     };
     let ev = repo.path().join("ev");
-    let out = run(&plan(project, FeatureVerify::default()), repo.path(), &ev).unwrap();
+    let p = Plan::verify(&project, None).unwrap();
+    let out = run(&p, repo.path(), &ev).unwrap();
     let log = fs::read_to_string(ev.join(&out.results[0].stdout)).unwrap();
     assert_eq!(log, "token=[REDACTED]\n");
 }
@@ -331,20 +332,26 @@ fn feature_steps_reject_no_ops_and_planvil_access() {
             checks: vec![step("x", bad, &["AC-01"])],
             scenarios: vec![],
         };
-        assert!(Plan::new(&ProjectVerify::default(), &f).is_err(), "{bad}");
+        assert!(
+            Plan::validate(&ProjectVerify::default(), &f).is_err(),
+            "{bad}"
+        );
     }
     for bad in ["cat planvil/x/.planvil/state.json", "planvil resume"] {
         let f = FeatureVerify {
             checks: vec![step("x", bad, &["AC-01"])],
             scenarios: vec![],
         };
-        assert!(Plan::new(&ProjectVerify::default(), &f).is_err(), "{bad}");
+        assert!(
+            Plan::validate(&ProjectVerify::default(), &f).is_err(),
+            "{bad}"
+        );
     }
     let ok = FeatureVerify {
         checks: vec![step("x", "echo hi | grep -q hi", &["AC-01"])],
         scenarios: vec![],
     };
-    assert!(Plan::new(&ProjectVerify::default(), &ok).is_ok());
+    assert!(Plan::validate(&ProjectVerify::default(), &ok).is_ok());
 }
 
 #[test]
@@ -368,7 +375,11 @@ fn scenarios_cannot_opt_out_of_the_app() {
         checks: vec![],
         scenarios: vec![s],
     };
-    assert!(Plan::new(&project, &f).unwrap_err().contains("needs_app"));
+    assert!(
+        Plan::validate(&project, &f)
+            .unwrap_err()
+            .contains("needs_app")
+    );
 }
 
 #[test]
@@ -380,4 +391,92 @@ fn step_hash_changes_with_the_command() {
     };
     assert_eq!(step_hash(&a), step_hash(&a.clone()));
     assert_ne!(step_hash(&a), step_hash(&b));
+}
+
+fn write_script(dir: &Path, body: &str) -> PathBuf {
+    let path = dir.join("verify.sh");
+    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    path
+}
+
+fn project_with_check() -> ProjectVerify {
+    ProjectVerify {
+        preflight: vec![step("tools", "test -d .", &[])],
+        checks: vec![step("lint", "test -d .", &[])],
+        ..ProjectVerify::default()
+    }
+}
+
+#[test]
+fn validate_plan_runs_only_the_feature_steps_after_preflight() {
+    let feature = FeatureVerify {
+        checks: vec![step("reset", "test -d .", &["AC-01"])],
+        scenarios: vec![],
+    };
+    let p = Plan::validate(&project_with_check(), &feature).unwrap();
+    let names: Vec<&str> = p.steps.iter().map(|(_, s)| s.name.as_str()).collect();
+    assert_eq!(names, vec!["tools", "reset"]);
+}
+
+#[test]
+fn verify_plan_runs_the_script_and_project_checks_after_preflight() {
+    let p = Plan::verify(&project_with_check(), Some(Path::new("/repo/verify.sh"))).unwrap();
+    let names: Vec<&str> = p.steps.iter().map(|(_, s)| s.name.as_str()).collect();
+    assert_eq!(names, vec!["tools", SCRIPT_STEP, "lint"]);
+}
+
+#[test]
+fn verify_script_exit_code_decides_the_verdict() {
+    let repo = tempfile::tempdir().unwrap();
+    let ok = write_script(repo.path(), "test -d .");
+    let p = Plan::verify(&ProjectVerify::default(), Some(&ok)).unwrap();
+    let out = run(&p, repo.path(), &repo.path().join("ev1")).unwrap();
+    assert_eq!(out.verdict, Verdict::Passed);
+
+    let bad = write_script(repo.path(), "echo broken >&2; exit 4");
+    let p = Plan::verify(&ProjectVerify::default(), Some(&bad)).unwrap();
+    let out = run(&p, repo.path(), &repo.path().join("ev2")).unwrap();
+    assert_eq!(
+        out.verdict,
+        Verdict::Failed {
+            failing: vec![SCRIPT_STEP.into()]
+        }
+    );
+    assert_eq!(out.results[0].exit_code, Some(4));
+}
+
+#[test]
+fn verify_script_path_must_stay_inside_the_repository() {
+    for bad in ["/abs/verify.sh", "../verify.sh", ".git/hooks/x", ""] {
+        let p = ProjectVerify {
+            script: Some(bad.into()),
+            ..ProjectVerify::default()
+        };
+        assert!(p.validate().is_err(), "{bad:?}");
+    }
+    let ok = ProjectVerify {
+        script: Some("scripts/planvil-verify.sh".into()),
+        ..ProjectVerify::default()
+    };
+    assert_eq!(ok.validate(), Ok(()));
+}
+
+#[test]
+fn the_script_step_name_is_reserved_and_cannot_be_a_known_failure() {
+    let taken = ProjectVerify {
+        checks: vec![step(SCRIPT_STEP, "test -d .", &[])],
+        ..ProjectVerify::default()
+    };
+    assert!(taken.validate().is_err());
+    let hidden = ProjectVerify {
+        script: Some("scripts/v.sh".into()),
+        known_failures: vec![SCRIPT_STEP.into()],
+        ..ProjectVerify::default()
+    };
+    assert!(hidden.validate().is_err());
 }

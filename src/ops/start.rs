@@ -283,6 +283,7 @@ fn activate(
             let folder = layout::branch_to_folder(branch)?;
             RunState {
                 baseline_dirty: baseline,
+                verify_script_hash: ws.verify_script_hash()?,
                 // The first run in a repository discovers how to run and check it.
                 stage: if ws.config.verify.is_none() {
                     Stage::Setup

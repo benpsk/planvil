@@ -11,10 +11,18 @@ use crate::state::{Attempts, Failure, RunState, Stage, Status, Transition};
 pub enum Event {
     /// The current stage's gate passed; move to the next stage.
     Advance,
-    /// Validation passed with current evidence.
+    /// The feature's own checks passed; move on to Verify.
     ValidationPassed,
-    /// Validation failed; loop back to Feature (or Blocked if a limit is hit).
+    /// The feature's own checks failed; loop back to Feature (or Blocked if a limit is hit).
     ValidationFailed(Failure),
+    /// The whole-app verification passed with current evidence; the run is done.
+    VerificationPassed,
+    /// The whole-app verification failed; loop back to Feature in the same repair budget.
+    VerificationFailed(Failure),
+    /// The code changed after validation passed; validate it again before verifying.
+    Revalidate {
+        reason: String,
+    },
     /// A material question needs the user.
     AskUser {
         question: String,
@@ -80,8 +88,8 @@ pub fn apply(state: &RunState, event: &Event, now: u64) -> Result<RunState, Tran
             }
             moved(
                 state,
-                Stage::Done,
-                Status::Completed,
+                Stage::Verify,
+                Status::Active,
                 "validation passed",
                 now,
             )
@@ -90,7 +98,35 @@ pub fn apply(state: &RunState, event: &Event, now: u64) -> Result<RunState, Tran
             if !(active && state.stage == Stage::Validate) {
                 return Err(not_allowed("record a validation failure"));
             }
-            record_failure(state, failure, now)
+            record_failure(state, failure, "validation failed", now)
+        }
+        Event::VerificationPassed => {
+            if !(active && state.stage == Stage::Verify) {
+                return Err(not_allowed("record a verification pass"));
+            }
+            moved(
+                state,
+                Stage::Done,
+                Status::Completed,
+                "verification passed",
+                now,
+            )
+        }
+        Event::VerificationFailed(failure) => {
+            if !(active && state.stage == Stage::Verify) {
+                return Err(not_allowed("record a verification failure"));
+            }
+            record_failure(state, failure, "verification failed", now)
+        }
+        Event::Revalidate { reason } => {
+            if !(active && state.stage == Stage::Verify) {
+                return Err(not_allowed("revalidate"));
+            }
+            // The repair budget is kept: only the stale pass is dropped.
+            RunState {
+                validated: None,
+                ..moved(state, Stage::Validate, Status::Active, reason, now)
+            }
         }
         Event::AskUser { question } => {
             if !active {
@@ -191,6 +227,7 @@ pub fn apply(state: &RunState, event: &Event, now: u64) -> Result<RunState, Tran
                 attempts: Attempts::default(),
                 last_failure: None,
                 last_verify: None,
+                validated: None,
                 plan_approved_hash: state
                     .plan_approved_hash
                     .clone()
@@ -206,7 +243,7 @@ pub fn apply(state: &RunState, event: &Event, now: u64) -> Result<RunState, Tran
     Ok(next)
 }
 
-/// The stage `Advance` leads to. Validate and Done have no plain advance.
+/// The stage `Advance` leads to. Validate, Verify and Done have no plain advance.
 fn next_stage(stage: Stage) -> Option<Stage> {
     match stage {
         Stage::Setup => Some(Stage::Feature),
@@ -217,7 +254,7 @@ fn next_stage(stage: Stage) -> Option<Stage> {
         Stage::Implement => Some(Stage::Validate),
         // Kept so state from older builds still advances.
         Stage::Repair => Some(Stage::Validate),
-        Stage::Validate | Stage::Done => None,
+        Stage::Validate | Stage::Verify | Stage::Done => None,
     }
 }
 
@@ -240,7 +277,7 @@ fn moved(state: &RunState, stage: Stage, status: Status, reason: &str, now: u64)
     }
 }
 
-fn record_failure(state: &RunState, failure: &Failure, now: u64) -> RunState {
+fn record_failure(state: &RunState, failure: &Failure, what: &str, now: u64) -> RunState {
     let limits = state.limits;
     let repeat = state
         .last_failure
@@ -269,11 +306,12 @@ fn record_failure(state: &RunState, failure: &Failure, now: u64) -> RunState {
     };
     let (status, reason) = match &limit_hit {
         Some(r) => (Status::Blocked, r.as_str()),
-        None => (Status::Active, "validation failed"),
+        None => (Status::Active, what),
     };
     RunState {
         attempts,
         last_failure: Some(failure.clone()),
+        validated: None,
         status_reason: limit_hit.clone(),
         // A failure goes back through the thinking stages: re-read the requirements,
         // re-audit with the failure in hand, re-plan, then fix.

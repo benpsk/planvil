@@ -140,7 +140,7 @@ fn known_failures_do_not_fail_a_feature() {
         r#"{"checks":[{"name":"legacy","run":["test","-f","missing.txt"]},{"name":"ok","run":["test","-d","."]}],"known_failures":["legacy"]}"#,
     )
     .unwrap();
-    let plan = crate::verify::Plan::new(&project, &Default::default()).unwrap();
+    let plan = crate::verify::Plan::verify(&project, None).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let out = crate::verify::run(&plan, dir.path(), &dir.path().join("ev")).unwrap();
     assert_eq!(out.verdict, crate::verify::Verdict::Passed);
@@ -215,4 +215,122 @@ fn init_refuses_while_a_run_is_in_progress() {
     )
     .unwrap_err();
     assert!(err.to_string().contains("in progress"), "{err}");
+}
+
+const SCRIPTED: &str = r#"{"script":"scripts/planvil-verify.sh"}"#;
+
+fn propose_script(root: &Path, body: &str) {
+    fs::write(
+        root.join("planvil/sp20-x/verify.proposed.sh"),
+        format!("#!/bin/sh\nset -e\n{body}\n"),
+    )
+    .unwrap();
+}
+
+fn approve(root: &Path) {
+    ops::ask(root, "Setup ok?", QuestionKind::ApproveSetup).unwrap();
+    user_replied(root);
+    ops::answer(root, "ok", Some(true)).unwrap();
+}
+
+#[test]
+fn setup_proves_the_verify_script_and_installs_it_where_configured() {
+    let dir = fresh();
+    propose(dir.path(), SCRIPTED);
+    propose_script(dir.path(), "test -f README.md");
+    let out = ops::setup_check(dir.path()).unwrap();
+    assert!(
+        out.contains("USABLE") && out.contains("verify-script"),
+        "{out}"
+    );
+    approve(dir.path());
+    ops::apply_setup(dir.path()).unwrap();
+
+    let installed = dir.path().join("scripts/planvil-verify.sh");
+    assert!(
+        fs::read_to_string(&installed)
+            .unwrap()
+            .contains("README.md")
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&installed).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0o111, "executable");
+    }
+    let cfg = fs::read_to_string(dir.path().join(".planvil.json")).unwrap();
+    assert!(cfg.contains("scripts/planvil-verify.sh"), "{cfg}");
+    assert_eq!(state(dir.path()).stage, Stage::Feature);
+}
+
+#[test]
+fn a_script_proposal_needs_the_proposed_script() {
+    let dir = fresh();
+    propose(dir.path(), SCRIPTED);
+    let err = ops::setup_check(dir.path()).unwrap_err().to_string();
+    assert!(err.contains("verify.proposed.sh"), "{err}");
+}
+
+#[test]
+fn a_proposal_must_check_something() {
+    let dir = fresh();
+    propose(dir.path(), "{}");
+    let err = ops::setup_check(dir.path()).unwrap_err().to_string();
+    assert!(err.contains("script"), "{err}");
+}
+
+#[test]
+fn a_verify_script_that_fails_today_cannot_be_approved() {
+    let dir = fresh();
+    propose(dir.path(), SCRIPTED);
+    propose_script(dir.path(), "test -f missing.txt");
+    let out = ops::setup_check(dir.path()).unwrap();
+    assert!(out.contains("verify script fails"), "{out}");
+    assert!(ops::ask(dir.path(), "ok?", QuestionKind::ApproveSetup).is_err());
+}
+
+#[test]
+fn editing_the_proposed_script_after_approval_voids_the_approval() {
+    let dir = fresh();
+    propose(dir.path(), SCRIPTED);
+    propose_script(dir.path(), "test -f README.md");
+    ops::setup_check(dir.path()).unwrap();
+    approve(dir.path());
+    propose_script(dir.path(), "true");
+    let err = ops::apply_setup(dir.path()).unwrap_err().to_string();
+    assert!(err.contains("has not been checked"), "{err}");
+    assert!(!dir.path().join("scripts/planvil-verify.sh").exists());
+}
+
+#[test]
+fn the_verify_script_may_not_replace_an_existing_file() {
+    for target in ["README.md", ".planvil.json", ".gitignore"] {
+        let dir = fresh();
+        propose(dir.path(), &format!(r#"{{"script":"{target}"}}"#));
+        propose_script(dir.path(), "true");
+        let err = ops::setup_check(dir.path()).unwrap_err().to_string();
+        let refused = err.contains("choose another path") || err.contains("relative path inside");
+        assert!(refused, "{target}: {err}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_apply_leaves_no_half_installed_script() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = fresh();
+    propose(dir.path(), SCRIPTED);
+    propose_script(dir.path(), "test -f README.md");
+    ops::setup_check(dir.path()).unwrap();
+    approve(dir.path());
+    let config = dir.path().join(".planvil.json");
+    let before = fs::read_to_string(&config).unwrap();
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o444)).unwrap();
+    if fs::OpenOptions::new().write(true).open(&config).is_ok() {
+        return; // running as root: the file cannot be made unwritable
+    }
+    assert!(ops::apply_setup(dir.path()).is_err());
+    assert!(!dir.path().join("scripts/planvil-verify.sh").exists());
+    assert_eq!(fs::read_to_string(&config).unwrap(), before);
+    assert_eq!(state(dir.path()).stage, Stage::Setup);
 }

@@ -37,7 +37,7 @@ const READ_ONLY_TOOLS: [&str; 22] = [
 pub enum Phase {
     /// Feature, Audit, Plan, Decide: application source is read-only.
     Prepare,
-    /// Implement, Validate, Repair: source edits allowed, protected paths still guarded.
+    /// Implement, Validate, Verify, Repair: source edits allowed, protected paths still guarded.
     Build,
     /// Done or terminal: nothing enforced.
     Off,
@@ -51,7 +51,7 @@ pub fn phase(stage: Stage, status: Status) -> Phase {
         Stage::Setup | Stage::Feature | Stage::Audit | Stage::Plan | Stage::Decide => {
             Phase::Prepare
         }
-        Stage::Implement | Stage::Validate | Stage::Repair => Phase::Build,
+        Stage::Implement | Stage::Validate | Stage::Verify | Stage::Repair => Phase::Build,
         Stage::Done => Phase::Off,
     }
 }
@@ -190,6 +190,13 @@ fn decide_bash(ctx: &Context, phase: Phase, command: &str) -> Decision {
              state, or .claude settings and hooks). Only the planvil binary changes those."
                 .into(),
         ),
+        (Phase::Build | Phase::Off, Err(_)) if touches_verify_script(ctx, command) => {
+            Decision::Deny(
+                "this command references the project's verify script, which is protected during a \
+                 run. Running it on its own is fine (`./<script>`); the user changes it outside a run."
+                    .into(),
+            )
+        }
         (Phase::Build | Phase::Off, Err(_)) => Decision::Allow,
     }
 }
@@ -199,6 +206,40 @@ fn touches_protected_text(command: &str) -> bool {
     [".planvil", ".claude/settings", ".claude/hooks", ".mcp.json"]
         .iter()
         .any(|p| lower.contains(p))
+}
+
+/// Repository-relative path of the project's verify script, if one is configured.
+fn verify_script(ctx: &Context) -> Option<String> {
+    ctx.config.verify.as_ref()?.script.clone()
+}
+
+/// The command mentions the verify script for anything but simply running it.
+fn touches_verify_script(ctx: &Context, command: &str) -> bool {
+    let Some(script) = verify_script(ctx) else {
+        return false;
+    };
+    let name = script.trim_start_matches("./");
+    if !command.contains(name) {
+        return false;
+    }
+    // `cd <repo root> && <run it>` is the same as running it from the root.
+    let run = match command.split_once("&&") {
+        Some((cd, rest)) if cd_to_repo_root(ctx, cd) => rest,
+        _ => command,
+    };
+    let only_runs = ["", "./", "sh ", "bash ", "sh ./", "bash ./"]
+        .iter()
+        .any(|prefix| run.trim() == format!("{prefix}{name}"));
+    !only_runs
+}
+
+/// `part` is exactly `cd <dir>` where `dir` is the repository root.
+fn cd_to_repo_root(ctx: &Context, part: &str) -> bool {
+    let mut words = part.split_whitespace();
+    let (Some("cd"), Some(dir), None) = (words.next(), words.next(), words.next()) else {
+        return false;
+    };
+    resolve(ctx.cwd, Path::new(dir)).is_some_and(|d| norm(&d) == norm(ctx.repo_root))
 }
 
 /// Case-folded on filesystems that are usually case-insensitive.
@@ -242,6 +283,11 @@ fn protected(ctx: &Context, target: &Path) -> Option<&'static str> {
         .is_some_and(|n| n.to_string_lossy().to_lowercase().starts_with("settings"));
     if within(target, &claude) && (settings || within(target, &claude.join("hooks"))) {
         return Some("hook configuration is protected during a run");
+    }
+    if verify_script(ctx).is_some_and(|s| norm(target) == norm(&ctx.repo_root.join(s))) {
+        return Some(
+            "the project's verify script decides whether a run is done; only the user changes it",
+        );
     }
     if norm(target) == norm(&ctx.repo_root.join(".mcp.json")) {
         return Some("MCP server configuration is protected during a run");
@@ -296,6 +342,7 @@ pub fn stage_name(stage: Stage) -> &'static str {
         Stage::Decide => "Decide",
         Stage::Implement => "Implement",
         Stage::Validate => "Validate",
+        Stage::Verify => "Verify",
         Stage::Repair => "Repair",
         Stage::Done => "Done",
     }

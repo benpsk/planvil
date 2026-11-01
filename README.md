@@ -1,16 +1,19 @@
 # planvil
 
 Enforced feature workflow for Claude Code. You give it a feature; the agent works through
-**Feature → Audit → Plan → Decide → Implement → Validate → Done** in your normal Claude Code
-terminal. When validation fails, it loops back through Feature → Audit → Plan → Decide →
-Implement by itself, with a written failure analysis, until it passes or hits its limits. Hooks enforce each stage, and verification evidence is recorded rather
+**Feature → Audit → Plan → Decide → Implement → Validate → Verify → Done** in your normal
+Claude Code terminal. Validate checks that the feature works; Verify checks that the whole app
+still works. When either fails, it loops back through Feature → Audit → Plan → Decide →
+Implement → Validate → Verify by itself, with a written failure analysis, until it passes or
+hits its limits. Hooks enforce each stage, and verification evidence is recorded rather
 than claimed.
 
 - The agent cannot change application code until FEATURE, AUDIT, PLAN and DECISIONS pass their
   content gates.
 - It cannot finish while the run is incomplete; the stop hook sends it back with the next step.
-- "Done" requires `planvil verify` to pass every acceptance criterion against the current
-  code. A model saying "tests pass" counts for nothing.
+- "Done" requires `planvil validate` to pass every acceptance criterion and then
+  `planvil verify` to pass the project's verify script, both against the same, current code.
+  A model saying "tests pass" counts for nothing.
 - Failure loops are bounded (default: 5 cycles, or 3 identical failures in a row), after which
   the run is reported as **blocked**, not done.
 
@@ -93,7 +96,7 @@ discovers how the project runs and you approve it once. After that, every featur
    uncommitted work; it never stashes or resets.
 2. Creates `planvil/<branch-with-dashes>/` (`sp20/mcp` → `planvil/sp20-mcp/`) and adds
    `/planvil/` to `.gitignore`.
-3. Writes the document templates: FEATURE, AUDIT, PLAN, DECISIONS, HANDOFF and `verify.json`.
+3. Writes the document templates: FEATURE, AUDIT, PLAN, DECISIONS, HANDOFF and `validate.json`.
 
 Then the agent works through the stages. You are asked only for things that are yours to
 decide: confirming FEATURE.md, approving the setup, business rules, and destructive or
@@ -122,7 +125,7 @@ planvil/sp20-mcp/
 ├── PLAN.md        Status · Steps · Verification (AC → check) · Risks
 ├── DECISIONS.md   Decided · Open questions
 ├── HANDOFF.md     Short resume packet (not gated)
-├── verify.json    Feature checks and runtime scenarios
+├── validate.json  This feature's checks and runtime scenarios (Validate stage)
 ├── REPORT.md      Completion or blocked report
 └── .planvil/      state.json, lock, evidence/NNN/ (written only by planvil)
 ```
@@ -133,7 +136,7 @@ repository path, PLAN must map every AC, and DECISIONS must have no unchecked op
 
 ## Configuration: `.planvil.json`
 
-Every key is optional; `planvil init` writes a minimal file. `verify` is filled in by the Setup stage.
+Every key is optional; `planvil init` writes a minimal file. `verify` (including the verify script) is filled in by the Setup stage.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -151,26 +154,48 @@ Every key is optional; `planvil init` writes a minimal file. `verify` is filled 
 
 Limits are copied into the run when it starts, so editing the file mid-run cannot loosen them.
 
-### `verify` (discovered for you)
+### Validate and Verify: two checks, two questions
 
-You don't write this by hand. The first `/planvil` run in a repository without `verify`
+| Stage | Command | Question | Runs | Written |
+|---|---|---|---|---|
+| **Validate** | `planvil validate` | Does **this feature** work? | The feature's checks and scenarios from `validate.json`, each tied to an acceptance criterion | By the agent, for each feature |
+| **Verify** | `planvil verify` | Is the **whole app** still fine? | The project's verify script (e.g. `scripts/planvil-verify.sh`) | Once, during Setup; you approve it |
+
+Validate runs first. When it passes, Verify runs against the same code. If either fails, the
+run loops back to Feature with a failure analysis that says which one failed, and goes
+through Validate and Verify again. Both share one repair budget. If the code changes after
+Validate passed, Verify sends the run back to Validate.
+
+### `verify` and the verify script (discovered for you)
+
+You don't write these by hand. The first `/planvil` run in a repository without `verify`
 starts with a **Setup** stage:
 
-1. The agent works out how the project runs from its CI workflows, task runners, manifests,
-   docker-compose and docs, for any language or framework.
-2. It writes a proposal, and `planvil setup check` proves it: tools exist, services respond,
-   the app starts and becomes ready, every check runs. Checks that already fail are recorded
-   as `known_failures`, isolated as narrowly as possible, so later features aren't blamed for
-   them.
-3. You approve a short summary once (`planvil ask --approve-setup`).
-4. `planvil setup apply` saves it to `.planvil.json`. Commit that file. From then on it's
-   protected during runs.
+1. The agent works out how the project is checked from its CI workflows, task runners,
+   manifests, docker-compose and docs, for any language or framework.
+2. It writes a **verify script** that checks the whole app (lint, types, every test suite)
+   and exits 0 only when everything passes, plus a proposal for `.planvil.json`.
+3. `planvil setup check` proves it: tools exist, services respond, the app starts and becomes
+   ready, and the script passes on the current code. Pre-existing failures are taken out of
+   the script into a separate check listed in `known_failures`, isolated as narrowly as
+   possible, so later features aren't blamed for them.
+4. You approve a short summary once (`planvil ask --approve-setup`). Changing the script or
+   the proposal afterwards voids the approval.
+5. `planvil setup apply` installs the script (for example `scripts/planvil-verify.sh`) and
+   saves the config to `.planvil.json`. Commit both. From then on they are protected during
+   runs: the agent can run the script but not change it. planvil also records the script's
+   hash when a run starts, so if it changes anyway, Verify blocks the run until you type
+   `planvil resume` to accept the change.
+
+The script is an ordinary shell script. You can run it yourself or from CI at any time, and
+edit it outside a run (or re-run `/planvil:planvil init`).
 
 The resulting section looks like this:
 
 ```json
 {
   "verify": {
+    "script": "scripts/planvil-verify.sh",
     "env": { "APP_ENV": "test" },
     "preflight": [{ "name": "db", "run": ["pg_isready"] }],
     "app": {
@@ -178,25 +203,24 @@ The resulting section looks like this:
       "cwd": "backend",
       "ready": { "http": "http://127.0.0.1:8080/health" },
       "startup_timeout_secs": 90
-    },
-    "checks": [
-      { "name": "vet", "run": ["go", "vet", "./..."] },
-      { "name": "unit", "run": ["go", "test", "./..."], "timeout_secs": 900 }
-    ]
+    }
   }
 }
 ```
 
-- **preflight**: environment checks. A failure, or a missing tool anywhere, makes the run
-  **blocked / unverified**, never a pass.
-- **app**: launched for runtime scenarios, polled until ready (`http` URL or a `run`
-  command), and stopped afterwards with its whole process group.
-- **checks**: required for every feature. These are protected; the agent cannot edit them.
+- **script**: the verify script, run in Verify. Time limit `script_timeout_secs` (default 3600).
+- **preflight**: environment checks, run before both Validate and Verify. A failure, or a
+  missing tool anywhere, makes the run **blocked / unverified**, never a pass.
+- **app**: launched for the feature's runtime scenarios, polled until ready (`http` URL or a
+  `run` command), and stopped afterwards with its whole process group.
+- **checks** (optional): extra whole-app checks run in Verify next to the script, mainly to
+  isolate `known_failures`. Projects set up before the verify script existed keep working
+  with checks only.
 - Steps use an argument list (`run`). `shell` (runs `sh -c`) is allowed as a deliberate choice.
 - Values of variables whose names contain TOKEN, SECRET, PASSWORD or KEY are redacted from
   logs.
 
-The agent writes the feature's own `verify.json`, and every acceptance criterion must be
+The agent writes the feature's own `validate.json`, and every acceptance criterion must be
 covered:
 
 ```json
@@ -207,17 +231,18 @@ covered:
 ```
 
 Scenarios run against the live app. When an app is configured, at least one scenario is
-required. A health check returning 200 does not prove a feature.
+required. A health check returning 200 does not prove a feature. Feature folders created
+before this change keep their `verify.json`, which is still read.
 
 ### Evidence and staleness
 
-`planvil verify` records the command, working directory, start and end times, exit code, and
-stdout/stderr for every step in `.planvil/evidence/NNN/`. It fingerprints the code first:
-tracked files including uncommitted edits, untracked non-ignored files, FEATURE.md,
-`verify.json` and `.planvil.json`. If anything changes during the run, the results are
-discarded. A failed run cannot be revalidated until the code actually changes. Editing
-FEATURE.md after it was confirmed sends the run back to the Feature stage and invalidates the
-plan and the evidence.
+`planvil validate` and `planvil verify` record the command, working directory, start and end
+times, exit code, and stdout/stderr for every step in `.planvil/evidence/NNN/`. They
+fingerprint the code first: tracked files including uncommitted edits, untracked non-ignored
+files, FEATURE.md, `validate.json` and `.planvil.json`. If anything changes during the run,
+the results are discarded. A failed run cannot be revalidated until the code actually
+changes. Editing FEATURE.md after it was confirmed sends the run back to the Feature stage and
+invalidates the plan and the evidence. The report shows both stages' evidence.
 
 ## What is enforced
 
@@ -230,12 +255,12 @@ plan and the evidence.
 | Shell commands before Implement | **Best effort**: one-line, recognized read-only commands only, with per-command option rules (`sed -n 'Np'` only, no `sort -o`, `rg --pre`, `git -c`/`--output`, …). Loops, substitution, heredocs, comments, redirection into files and variable prefixes are denied |
 | Unknown and MCP tools before Implement | Denied unless listed in `allowed_tools` |
 | Scheduling tools and subagents in their own worktree | Denied during a run |
-| Run state, `.planvil.json`, `.claude/settings*`, `.claude/hooks/`, `.mcp.json`, `.git/`, the planvil binary and plugin | Protected in every active stage |
+| Run state, `.planvil.json`, the verify script, `.claude/settings*`, `.claude/hooks/`, `.mcp.json`, `.git/`, the planvil binary and plugin | Protected in every active stage (the verify script may still be run on its own) |
 | `git push`, `pull`, `merge`, `rebase`, `reset --hard`, `clean`, `checkout`, `switch`, `stash`, branch rename/delete | Denied during a run |
 | HEAD moved off the run's branch, or a write into the run's repo from elsewhere | Still enforced: a live run on another branch of the checkout blocks mutations |
 | Finishing early | Stop hook continues the same session; bounded |
 | Answers and confirmations | Accepted only after a real user message or AskUserQuestion answer; your verbatim reply is recorded |
-| Weakening checks | No-op checks rejected; changing or removing a check that just failed needs your plan approval (which covers PLAN.md and verify.json) |
+| Weakening checks | No-op checks rejected; changing or removing a check that just failed needs your plan approval (which covers PLAN.md and validate.json) |
 | pause / resume / cancel | Applied only when you type them |
 | Hook crash, bad payload, git failure or timeout | Mutation-capable calls denied (`onFailure: block` on PreToolUse) |
 | Interrupted verification | Records nothing; leftover processes from it block the next verification until stopped |

@@ -76,7 +76,9 @@ enum Cmd {
         #[arg(long)]
         rejected: bool,
     },
-    /// Run verification and record evidence (Validate stage).
+    /// Run this feature's own checks from validate.json and record evidence (Validate stage).
+    Validate,
+    /// Run the project's verify script on the whole app and record evidence (Verify stage).
     Verify,
     /// Write and print the completion or blocked report.
     Report,
@@ -210,6 +212,7 @@ fn run_ops(cmd: Cmd, cwd: &Path) -> ops::Result<String> {
             };
             ops::answer(cwd, &text, verdict)
         }
+        Cmd::Validate => ops::validate(cwd),
         Cmd::Verify => ops::verify(cwd),
         Cmd::Report => report::report(cwd),
         Cmd::Pause => user_control(cwd, Control::Pause, "pause"),

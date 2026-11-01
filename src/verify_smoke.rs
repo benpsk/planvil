@@ -6,8 +6,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AppStart, FeatureVerify, Plan, ProjectVerify, RunCtx, StepKind, StepResult, Verdict,
-    leftover_problem, run_step, start_app, unavailable,
+    AppStart, Plan, ProjectVerify, RunCtx, StepKind, StepResult, Verdict, leftover_problem,
+    run_step, start_app, unavailable,
 };
 use crate::{process, redact};
 
@@ -22,15 +22,16 @@ pub struct SmokeOutcome {
     pub app_notes: Vec<String>,
 }
 
-/// Run preflight and every check, then start the app, wait for readiness and stop it.
-/// Writes logs and `smoke.json` into `evidence_dir`.
+/// Run preflight, the verify script at `script` and every check, then start the app, wait
+/// for readiness and stop it. Writes logs and `smoke.json` into `evidence_dir`.
 pub fn smoke(
     project: &ProjectVerify,
+    script: Option<&Path>,
     repo_root: &Path,
     evidence_dir: &Path,
 ) -> std::io::Result<SmokeOutcome> {
     fs::create_dir_all(evidence_dir)?;
-    let plan = match Plan::new(project, &FeatureVerify::default()) {
+    let plan = match Plan::verify(project, script) {
         Ok(plan) => plan,
         Err(e) => {
             return Ok(SmokeOutcome {

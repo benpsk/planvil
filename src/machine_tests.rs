@@ -33,6 +33,25 @@ fn fail(sig: &str) -> Event {
     })
 }
 
+fn verify_fail(sig: &str) -> Event {
+    Event::VerificationFailed(Failure {
+        signature: sig.into(),
+        summary: format!("{sig} failed"),
+    })
+}
+
+fn record(passed: bool) -> crate::state::VerifyRecord {
+    crate::state::VerifyRecord {
+        stage: Stage::Validate,
+        run: 1,
+        at: 0,
+        fingerprint: "x".into(),
+        passed,
+        evidence_dir: "e".into(),
+        failing: vec![],
+    }
+}
+
 fn step(s: &RunState, e: Event) -> RunState {
     apply(s, &e, 1).unwrap()
 }
@@ -90,16 +109,121 @@ fn validate_cannot_advance_without_a_result() {
 }
 
 #[test]
-fn validation_pass_completes_the_run() {
+fn validation_pass_moves_on_to_verify() {
     let s = step(&at(Stage::Validate), Event::ValidationPassed);
+    assert_eq!((s.stage, s.status), (Stage::Verify, Status::Active));
+}
+
+#[test]
+fn verification_pass_completes_the_run() {
+    let s = step(&at(Stage::Verify), Event::VerificationPassed);
     assert_eq!((s.stage, s.status), (Stage::Done, Status::Completed));
 }
 
 #[test]
+fn verify_cannot_advance_without_a_result() {
+    let err = apply(&at(Stage::Verify), &Event::Advance, 1).unwrap_err();
+    assert!(matches!(err, TransitionError::NotAllowed { .. }));
+}
+
+#[test]
 fn validation_result_only_accepted_in_validate() {
-    for stage in [Stage::Audit, Stage::Implement, Stage::Repair] {
+    for stage in [Stage::Audit, Stage::Implement, Stage::Repair, Stage::Verify] {
         assert!(apply(&at(stage), &Event::ValidationPassed, 1).is_err());
         assert!(apply(&at(stage), &fail("x"), 1).is_err());
+    }
+}
+
+#[test]
+fn verification_result_only_accepted_in_verify() {
+    for stage in [Stage::Implement, Stage::Validate, Stage::Repair] {
+        assert!(apply(&at(stage), &Event::VerificationPassed, 1).is_err());
+        assert!(apply(&at(stage), &verify_fail("x"), 1).is_err());
+    }
+}
+
+#[test]
+fn verification_failure_loops_back_to_feature_in_the_same_budget() {
+    let s = step(&at(Stage::Validate), fail("AC-01"));
+    let s = revalidate(&s);
+    let s = step(&s, Event::ValidationPassed);
+    let s = step(&s, verify_fail("unit"));
+    assert_eq!((s.stage, s.status), (Stage::Feature, Status::Active));
+    assert_eq!(s.attempts.repair_cycles, 2);
+    assert_eq!(s.last_failure.as_ref().unwrap().signature, "unit");
+}
+
+#[test]
+fn a_verify_failure_loop_goes_through_validate_again() {
+    let mut s = step(&at(Stage::Verify), verify_fail("unit"));
+    let mut seen = vec![s.stage];
+    while s.stage != Stage::Verify {
+        let e = if s.stage == Stage::Validate {
+            Event::ValidationPassed
+        } else {
+            Event::Advance
+        };
+        s = step(&s, e);
+        seen.push(s.stage);
+    }
+    assert_eq!(
+        seen,
+        vec![
+            Stage::Feature,
+            Stage::Audit,
+            Stage::Plan,
+            Stage::Decide,
+            Stage::Implement,
+            Stage::Validate,
+            Stage::Verify
+        ]
+    );
+}
+
+#[test]
+fn repeated_identical_verify_failures_block() {
+    let mut s = at(Stage::Verify);
+    for _ in 0..LIMITS.max_equivalent_failures {
+        s = step(&s, verify_fail("unit"));
+        if s.status == Status::Blocked {
+            break;
+        }
+        s = step(&revalidate(&s), Event::ValidationPassed);
+    }
+    assert_eq!(s.status, Status::Blocked);
+}
+
+#[test]
+fn a_failure_forgets_the_validation_pass() {
+    let s = RunState {
+        validated: Some(record(true)),
+        ..at(Stage::Verify)
+    };
+    assert!(step(&s, verify_fail("unit")).validated.is_none());
+}
+
+#[test]
+fn revalidate_goes_back_from_verify_and_keeps_the_budget() {
+    let s = RunState {
+        attempts: crate::state::Attempts {
+            repair_cycles: 2,
+            equivalent_failures: 1,
+        },
+        validated: Some(record(true)),
+        ..at(Stage::Verify)
+    };
+    let back = step(
+        &s,
+        Event::Revalidate {
+            reason: "code changed".into(),
+        },
+    );
+    assert_eq!((back.stage, back.status), (Stage::Validate, Status::Active));
+    assert_eq!(back.attempts.repair_cycles, 2);
+    assert!(back.validated.is_none());
+    for stage in [Stage::Implement, Stage::Validate] {
+        let e = Event::Revalidate { reason: "x".into() };
+        assert!(apply(&at(stage), &e, 1).is_err());
     }
 }
 
@@ -403,14 +527,8 @@ fn rewind_invalidates_evidence_and_approvals_it_goes_back_past() {
     let base = RunState {
         feature_confirmed_hash: Some("f".into()),
         plan_approved_hash: Some("p".into()),
-        last_verify: Some(crate::state::VerifyRecord {
-            run: 1,
-            at: 0,
-            fingerprint: "x".into(),
-            passed: false,
-            evidence_dir: "e".into(),
-            failing: vec![],
-        }),
+        last_verify: Some(record(false)),
+        validated: Some(record(true)),
         ..at(Stage::Repair)
     };
     let to_plan = step(
@@ -421,6 +539,7 @@ fn rewind_invalidates_evidence_and_approvals_it_goes_back_past() {
         },
     );
     assert_eq!(to_plan.last_verify, None);
+    assert_eq!(to_plan.validated, None);
     assert_eq!(to_plan.plan_approved_hash, None);
     assert_eq!(to_plan.feature_confirmed_hash.as_deref(), Some("f"));
     let to_impl = step(

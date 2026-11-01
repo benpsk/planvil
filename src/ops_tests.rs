@@ -7,7 +7,7 @@ use crate::state::{QuestionKind, RunState, Stage, Status};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const FEATURE_MD: &str = "\
+pub(super) const FEATURE_MD: &str = "\
 # Feature
 ## Goal
 Greet users.
@@ -23,7 +23,7 @@ None
 | AC-01 | hello.txt says hello |
 ";
 
-const AUDIT_MD: &str = "\
+pub(super) const AUDIT_MD: &str = "\
 ## Affected code
 | Path | Symbol | Why |
 |---|---|---|
@@ -62,24 +62,24 @@ None
 
 const VERIFY_JSON: &str = r#"{"checks":[{"name":"greeting","run":["grep","-q","hello","hello.txt"],"criteria":["AC-01"]}]}"#;
 
-struct Run {
-    dir: tempfile::TempDir,
+pub(super) struct Run {
+    pub(super) dir: tempfile::TempDir,
 }
 
 impl Run {
-    fn root(&self) -> &Path {
+    pub(super) fn root(&self) -> &Path {
         self.dir.path()
     }
 
-    fn feature(&self) -> PathBuf {
+    pub(super) fn feature(&self) -> PathBuf {
         self.root().join("planvil/sp20-greet")
     }
 
-    fn write_doc(&self, name: &str, body: &str) {
+    pub(super) fn write_doc(&self, name: &str, body: &str) {
         fs::write(self.feature().join(name), body).unwrap();
     }
 
-    fn state(&self) -> RunState {
+    pub(super) fn state(&self) -> RunState {
         Workspace::current(self.root())
             .unwrap()
             .unwrap()
@@ -89,7 +89,7 @@ impl Run {
     }
 
     /// Simulate the prompt hook seeing a user message now.
-    fn user_replied(&self) {
+    pub(super) fn user_replied(&self) {
         let ws = Workspace::current(self.root()).unwrap().unwrap();
         let lock = ws.lock().unwrap();
         let s = lock.load().unwrap().unwrap();
@@ -100,6 +100,10 @@ impl Run {
         })
         .unwrap();
     }
+}
+
+pub(super) fn started_plain() -> Run {
+    started()
 }
 
 fn started() -> Run {
@@ -118,7 +122,7 @@ fn started() -> Run {
     Run { dir }
 }
 
-fn confirm_feature(r: &Run) {
+pub(super) fn confirm_feature(r: &Run) {
     r.write_doc(docs::FEATURE, FEATURE_MD);
     ask(
         r.root(),
@@ -131,13 +135,13 @@ fn confirm_feature(r: &Run) {
 }
 
 /// Drive a run from start to the Validate stage.
-fn to_validate(r: &Run) {
+pub(super) fn to_validate(r: &Run) {
     confirm_feature(r);
     advance(r.root()).unwrap();
     r.write_doc(docs::AUDIT, AUDIT_MD);
     advance(r.root()).unwrap();
     r.write_doc(docs::PLAN, PLAN_MD);
-    r.write_doc(docs::VERIFY, VERIFY_JSON);
+    r.write_doc(docs::VALIDATE, VERIFY_JSON);
     advance(r.root()).unwrap();
     r.write_doc(docs::DECISIONS, DECISIONS_MD);
     advance(r.root()).unwrap();
@@ -148,7 +152,7 @@ fn to_validate(r: &Run) {
 
 /// After a failed verification: walk the loop Feature → Audit → Plan → Decide → Implement →
 /// Validate, explaining the failure of `greeting` in AUDIT.md on the way.
-fn repair_loop(r: &Run) {
+pub(super) fn repair_loop(r: &Run) {
     assert_eq!(r.state().stage, Stage::Feature);
     advance(r.root()).unwrap();
     r.write_doc(
@@ -174,7 +178,7 @@ fn start_creates_branch_folder_templates_and_gitignore() {
         docs::PLAN,
         docs::DECISIONS,
         docs::HANDOFF,
-        docs::VERIFY,
+        docs::VALIDATE,
     ] {
         assert!(r.feature().join(name).exists(), "{name}");
     }
@@ -381,7 +385,7 @@ fn decide_gate_blocks_on_open_questions() {
     r.write_doc(docs::AUDIT, AUDIT_MD);
     advance(r.root()).unwrap();
     r.write_doc(docs::PLAN, PLAN_MD);
-    r.write_doc(docs::VERIFY, VERIFY_JSON);
+    r.write_doc(docs::VALIDATE, VERIFY_JSON);
     advance(r.root()).unwrap();
     r.write_doc(
         docs::DECISIONS,
@@ -400,8 +404,8 @@ fn full_run_fails_repairs_and_completes() {
     let r = started();
     to_validate(&r);
 
-    let out = verify(r.root()).unwrap();
-    assert!(out.contains("verification FAILED"), "{out}");
+    let out = validate(r.root()).unwrap();
+    assert!(out.contains("validation FAILED"), "{out}");
     let s = r.state();
     assert_eq!(
         (s.stage, s.status),
@@ -427,8 +431,11 @@ fn full_run_fails_repairs_and_completes() {
 
     fs::write(r.root().join("hello.txt"), "hello\n").unwrap();
     advance(r.root()).unwrap();
+    let out = validate(r.root()).unwrap();
+    assert!(out.contains("validation PASSED"), "{out}");
+    assert_eq!(r.state().stage, Stage::Verify);
     let out = verify(r.root()).unwrap();
-    assert!(out.contains("PASSED"), "{out}");
+    assert!(out.contains("verification PASSED"), "{out}");
     let s = r.state();
     assert_eq!((s.stage, s.status), (Stage::Done, Status::Completed));
     assert!(s.last_verify.unwrap().passed);
@@ -438,7 +445,7 @@ fn full_run_fails_repairs_and_completes() {
 fn repair_guidance_names_the_cycle_and_failing_checks() {
     let r = started();
     to_validate(&r);
-    verify(r.root()).unwrap();
+    validate(r.root()).unwrap();
     let out = status(r.root()).unwrap();
     assert!(
         out.contains("Repair cycle 1/5") && out.contains("`greeting`"),
@@ -451,7 +458,7 @@ fn repeated_identical_failures_block_the_run() {
     let r = started();
     to_validate(&r);
     for i in 0..3 {
-        verify(r.root()).unwrap();
+        validate(r.root()).unwrap();
         if i < 2 {
             fs::write(r.root().join(format!("noise{i}.txt")), "x").unwrap();
             repair_loop(&r);
@@ -471,10 +478,10 @@ fn missing_tool_blocks_instead_of_passing() {
     let r = started();
     to_validate(&r);
     r.write_doc(
-        docs::VERIFY,
+        docs::VALIDATE,
         r#"{"checks":[{"name":"browser","run":["planvil-no-such-driver"],"criteria":["AC-01"]}]}"#,
     );
-    let out = verify(r.root()).unwrap();
+    let out = validate(r.root()).unwrap();
     assert!(out.contains("UNAVAILABLE"), "{out}");
     let s = r.state();
     assert_eq!(s.status, Status::Blocked);
@@ -489,7 +496,7 @@ fn changing_requirements_mid_run_rewinds_to_feature() {
         docs::FEATURE,
         &FEATURE_MD.replace("Greet users.", "Greet users politely."),
     );
-    let err = verify(r.root()).unwrap_err().to_string();
+    let err = validate(r.root()).unwrap_err().to_string();
     assert!(err.contains("back to the Feature stage"), "{err}");
     let s = r.state();
     assert_eq!(s.stage, Stage::Feature);
@@ -522,14 +529,14 @@ fn status_reports_gate_problems_and_next_action() {
 fn weakening_a_failing_check_needs_user_approval() {
     let r = started();
     to_validate(&r);
-    verify(r.root()).unwrap();
+    validate(r.root()).unwrap();
     // Make the failing check unable to fail instead of fixing the code.
     r.write_doc(
-        docs::VERIFY,
+        docs::VALIDATE,
         r#"{"checks":[{"name":"greeting","run":["test","-d","."],"criteria":["AC-01"]}]}"#,
     );
     repair_loop(&r);
-    let err = verify(r.root()).unwrap_err().to_string();
+    let err = validate(r.root()).unwrap_err().to_string();
     assert!(
         err.contains("failed last time and has since been changed"),
         "{err}"
@@ -542,16 +549,16 @@ fn checks_that_keep_changing_files_block_instead_of_looping() {
     let r = started();
     to_validate(&r);
     r.write_doc(
-        docs::VERIFY,
+        docs::VALIDATE,
         r#"{"checks":[{"name":"greeting","shell":"date +%N > generated-$$.txt; test -n x","criteria":["AC-01"]}]}"#,
     );
-    let first = verify(r.root()).unwrap();
+    let first = validate(r.root()).unwrap();
     assert!(
         first.contains("discarded") && first.contains("generated-"),
         "{first}"
     );
     assert_eq!(r.state().status, Status::Active);
-    let second = verify(r.root()).unwrap();
+    let second = validate(r.root()).unwrap();
     assert!(second.contains("BLOCKED"), "{second}");
     assert_eq!(r.state().status, Status::Blocked);
 }
@@ -561,6 +568,7 @@ fn report_is_honest_about_stale_evidence() {
     let r = started();
     to_validate(&r);
     fs::write(r.root().join("hello.txt"), "hello\n").unwrap();
+    validate(r.root()).unwrap();
     verify(r.root()).unwrap();
     let report = crate::report::report(r.root()).unwrap();
     assert!(report.contains("**Completed.**"), "{report}");
@@ -577,7 +585,7 @@ fn report_is_honest_about_stale_evidence() {
 fn repair_hint_for_feature_reflects_whether_it_is_still_confirmed() {
     let r = started();
     to_validate(&r);
-    verify(r.root()).unwrap();
+    validate(r.root()).unwrap();
     assert!(status(r.root()).unwrap().contains("still confirmed"));
     r.write_doc(
         docs::FEATURE,

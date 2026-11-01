@@ -1,8 +1,13 @@
-//! Verification: configuration, the controlled runner, and evidence.
+//! Validation and verification: configuration, the controlled runner, and evidence.
 //!
-//! Project-wide settings live in `.planvil.json` (`verify`); feature-specific checks and
-//! runtime scenarios live in `<feature_dir>/verify.json`. Every step runs from an explicit
-//! argument list unless the config deliberately chooses `shell`.
+//! Two plans run through the same runner:
+//! - **Validate** proves the feature: its checks and runtime scenarios from
+//!   `<feature_dir>/validate.json`.
+//! - **Verify** proves the whole app still works: the project's verify script and checks
+//!   from `.planvil.json` (`verify`), written once during Setup.
+//!
+//! Every step runs from an explicit argument list unless the config deliberately chooses
+//! `shell`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -23,6 +28,10 @@ const DEFAULT_STARTUP_TIMEOUT_SECS: u64 = 60;
 const READY_POLL: Duration = Duration::from_millis(500);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const STATUS_LINE_MAX: usize = 256;
+/// Step name of the project's verify script in a Verify plan.
+pub const SCRIPT_STEP: &str = "verify-script";
+/// The verify script may run the whole test suite, so it gets a longer default limit.
+const SCRIPT_TIMEOUT_SECS: u64 = 3600;
 
 fn default_timeout() -> u64 {
     DEFAULT_STEP_TIMEOUT_SECS
@@ -89,14 +98,19 @@ pub struct ProjectVerify {
     /// Environment and dependency checks. A failure blocks the run (not repairable code).
     pub preflight: Vec<Step>,
     pub app: Option<App>,
-    /// Checks required for every feature (lint, type, unit, ...).
+    /// Repository-relative path of the project's verify script, written during Setup.
+    /// It must exit 0 when the whole app is healthy. Protected during runs.
+    pub script: Option<String>,
+    /// Time limit for the verify script.
+    pub script_timeout_secs: Option<u64>,
+    /// Further whole-app checks, run in Verify next to the script.
     pub checks: Vec<Step>,
     /// Checks that already failed when setup was approved. They still run and are
     /// reported, but do not fail a feature. Keep them narrow so they hide nothing else.
     pub known_failures: Vec<String>,
 }
 
-/// `<feature_dir>/verify.json`.
+/// `<feature_dir>/validate.json`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct FeatureVerify {
@@ -204,6 +218,15 @@ fn validate_unique(steps: &[&Step]) -> Result<(), String> {
 
 impl ProjectVerify {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(script) = &self.script {
+            validate_script_path(script)?;
+        }
+        if self.script_timeout_secs == Some(0) {
+            return Err("script_timeout_secs must be at least 1".into());
+        }
+        if self.checks.iter().any(|c| c.name == SCRIPT_STEP) {
+            return Err(format!("`{SCRIPT_STEP}` is reserved for the verify script"));
+        }
         if let Some(unknown) = self
             .known_failures
             .iter()
@@ -234,6 +257,37 @@ impl ProjectVerify {
     }
 }
 
+/// The verify script must be a plain relative path inside the repository.
+fn validate_script_path(script: &str) -> Result<(), String> {
+    if crate::layout::validate_docs_root(script).is_err() {
+        return Err(format!(
+            "script `{script}` must be a relative path inside the repository"
+        ));
+    }
+    Ok(())
+}
+
+/// The step that runs the verify script at `path` (absolute).
+fn script_step(path: &Path, timeout_secs: u64) -> Step {
+    let path = path.display().to_string();
+    let run = if cfg!(windows) {
+        // `sh` (Git Bash) reads `/`-separated paths; drop the verbatim `\\?\` prefix.
+        let path = path.trim_start_matches(r"\\?\").replace('\\', "/");
+        vec!["sh".to_string(), path]
+    } else {
+        vec![path]
+    };
+    Step {
+        name: SCRIPT_STEP.into(),
+        run: Some(run),
+        shell: None,
+        cwd: None,
+        timeout_secs,
+        criteria: Vec::new(),
+        needs_app: None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StepKind {
@@ -253,7 +307,8 @@ pub struct Plan {
 }
 
 impl Plan {
-    pub fn new(project: &ProjectVerify, feature: &FeatureVerify) -> Result<Self, String> {
+    /// Validate: preflight, then the feature's checks and runtime scenarios.
+    pub fn validate(project: &ProjectVerify, feature: &FeatureVerify) -> Result<Self, String> {
         project.validate()?;
         for step in &feature.checks {
             validate_feature_step(step)?;
@@ -267,11 +322,7 @@ impl Plan {
                 ));
             }
         }
-        let steps: Vec<(StepKind, Step)> = project
-            .preflight
-            .iter()
-            .map(|s| (StepKind::Preflight, s.clone()))
-            .chain(project.checks.iter().map(|s| (StepKind::Check, s.clone())))
+        let steps = preflight(project)
             .chain(feature.checks.iter().map(|s| (StepKind::Check, s.clone())))
             .chain(
                 feature
@@ -280,9 +331,33 @@ impl Plan {
                     .map(|s| (StepKind::Scenario, s.clone())),
             )
             .collect();
+        Self::build(project, steps, BTreeSet::new())
+    }
+
+    /// Verify: preflight, the project's verify script at `script` (resolved by the
+    /// caller), then the project's checks. Pre-existing failures are tolerated here only.
+    pub fn verify(project: &ProjectVerify, script: Option<&Path>) -> Result<Self, String> {
+        project.validate()?;
+        let timeout = project.script_timeout_secs.unwrap_or(SCRIPT_TIMEOUT_SECS);
+        let steps = preflight(project)
+            .chain(script.map(|p| (StepKind::Check, script_step(p, timeout))))
+            .chain(project.checks.iter().map(|s| (StepKind::Check, s.clone())))
+            .collect();
+        Self::build(
+            project,
+            steps,
+            project.known_failures.iter().cloned().collect(),
+        )
+    }
+
+    fn build(
+        project: &ProjectVerify,
+        steps: Vec<(StepKind, Step)>,
+        known_failures: BTreeSet<String>,
+    ) -> Result<Self, String> {
         validate_unique(&steps.iter().map(|(_, s)| s).collect::<Vec<_>>())?;
         let plan = Self {
-            known_failures: project.known_failures.iter().cloned().collect(),
+            known_failures,
             env: project.env.clone(),
             app: project.app.clone(),
             steps,
@@ -308,18 +383,18 @@ impl Plan {
         let mut problems: Vec<String> = criteria
             .iter()
             .filter(|id| !covered.contains(id.as_str()))
-            .map(|id| format!("{id} has no check or scenario in verify.json"))
+            .map(|id| format!("{id} has no check or scenario in validate.json"))
             .collect();
         problems.extend(
             covered
                 .iter()
                 .filter(|id| !known.contains(*id))
-                .map(|id| format!("verify.json references unknown criterion {id}")),
+                .map(|id| format!("validate.json references unknown criterion {id}")),
         );
         let has_scenario = self.steps.iter().any(|(k, _)| *k == StepKind::Scenario);
         if self.app.is_some() && !has_scenario {
             problems.push(
-                "verify.json has no runtime scenario; the app is configured, so at least one \
+                "validate.json has no runtime scenario; the app is configured, so at least one \
                  scenario must exercise it"
                     .into(),
             );
@@ -366,6 +441,13 @@ pub struct Outcome {
     pub results: Vec<StepResult>,
     /// Notes about the app process (start, readiness, cleanup).
     pub app_notes: Vec<String>,
+}
+
+fn preflight(project: &ProjectVerify) -> impl Iterator<Item = (StepKind, Step)> + '_ {
+    project
+        .preflight
+        .iter()
+        .map(|s| (StepKind::Preflight, s.clone()))
 }
 
 /// Run `plan` from `repo_root`, writing logs and `result.json` into `evidence_dir`.

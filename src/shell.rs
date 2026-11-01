@@ -18,7 +18,7 @@ const AGENT_FORBIDDEN_PLANVIL: [&str; 7] = [
     "uninstall",
     "hook",
 ];
-const AGENT_PLANVIL: [&str; 15] = [
+const AGENT_PLANVIL: [&str; 16] = [
     "setup",
     "rename",
     "--version",
@@ -28,6 +28,7 @@ const AGENT_PLANVIL: [&str; 15] = [
     "advance",
     "ask",
     "answer",
+    "validate",
     "verify",
     "report",
     "doctor",

@@ -100,10 +100,21 @@ impl Workspace {
         Ok(file_hash(&self.doc(name))?)
     }
 
-    /// Hash over PLAN.md and verify.json together: approving the plan approves its checks.
+    /// The feature's checks file: `validate.json`, or `verify.json` in a folder started
+    /// before Validate and Verify were split.
+    pub fn validate_file(&self) -> &'static str {
+        let legacy = !self.doc(docs::VALIDATE).exists() && self.doc(docs::LEGACY_VALIDATE).exists();
+        if legacy {
+            docs::LEGACY_VALIDATE
+        } else {
+            docs::VALIDATE
+        }
+    }
+
+    /// Hash over PLAN.md and validate.json together: approving the plan approves its checks.
     pub fn plan_hash(&self) -> Result<Option<String>> {
         let plan = std::fs::read(self.doc(docs::PLAN)).ok();
-        let checks = std::fs::read(self.doc(docs::VERIFY)).unwrap_or_default();
+        let checks = std::fs::read(self.doc(self.validate_file())).unwrap_or_default();
         Ok(plan.map(|p| crate::util::sha256_hex(&[p, vec![0], checks].concat())))
     }
 
@@ -139,7 +150,7 @@ impl Workspace {
         let docs_rel = self.rel(&self.feature_dir);
         let extras = [
             format!("{docs_rel}/{}", docs::FEATURE),
-            format!("{docs_rel}/{}", docs::VERIFY),
+            format!("{docs_rel}/{}", self.validate_file()),
             config::CONFIG_FILE.to_string(),
         ];
         Ok(fingerprint::snapshot(
@@ -158,14 +169,47 @@ impl Workspace {
         Ok(docs::feature_criteria(&self.read_doc(docs::FEATURE)?))
     }
 
-    pub(crate) fn verify_plan(&self) -> Result<verify::Plan> {
-        let raw = self.read_doc(docs::VERIFY)?;
+    /// The Validate plan: preflight and this feature's checks and scenarios.
+    pub(crate) fn validate_plan(&self) -> Result<verify::Plan> {
+        let file = self.validate_file();
+        let raw = self.read_doc(file)?;
         let feature: FeatureVerify =
             serde_json::from_str(if raw.trim().is_empty() { "{}" } else { &raw })
-                .map_err(|e| refused(format!("{} is not valid: {e}", docs::VERIFY)))?;
+                .map_err(|e| refused(format!("{file} is not valid: {e}")))?;
         let project = self.config.verify.clone().unwrap_or_default();
-        verify::Plan::new(&project, &feature)
+        verify::Plan::validate(&project, &feature)
+            .map_err(|e| refused(format!("validation config: {e}")))
+    }
+
+    /// The Verify plan: preflight, the project's verify script and checks.
+    pub(crate) fn verify_plan(&self) -> Result<verify::Plan> {
+        let project = self.config.verify.clone().unwrap_or_default();
+        let script = self.verify_script();
+        if let Some(path) = &script
+            && !path.is_file()
+        {
+            return Err(refused(format!(
+                "the verify script {} is missing. Ask the user to restore it, or to rerun \
+                 `/planvil:planvil init` to set it up again",
+                self.rel(path)
+            )));
+        }
+        verify::Plan::verify(&project, script.as_deref())
             .map_err(|e| refused(format!("verification config: {e}")))
+    }
+
+    /// Hash of the verify script's current content; `None` without a script or file.
+    pub fn verify_script_hash(&self) -> Result<Option<String>> {
+        match self.verify_script() {
+            Some(path) => Ok(file_hash(&path)?),
+            None => Ok(None),
+        }
+    }
+
+    /// Absolute path of the project's verify script, when one is configured.
+    pub fn verify_script(&self) -> Option<PathBuf> {
+        let script = self.config.verify.as_ref()?.script.as_ref()?;
+        Some(self.repo_root.join(script))
     }
 }
 
@@ -192,6 +236,14 @@ pub fn control(cwd: &Path, action: Control) -> Result<String> {
         Control::Cancel => Event::Cancel,
     };
     let next = apply(&state, &event)?;
+    // Resuming is the user's say-so: the verify script as it is now is the one to use.
+    let next = match action {
+        Control::Resume => RunState {
+            verify_script_hash: ws.verify_script_hash()?,
+            ..next
+        },
+        Control::Pause | Control::Cancel => next,
+    };
     lock.save(&next)?;
     Ok(format!(
         "{:?} → {:?}. {}",
@@ -229,7 +281,7 @@ pub use questions::{answer, ask};
 pub use rename::rename;
 pub use setup::{apply_setup, check as setup_check};
 pub use start::{StartArgs, start};
-pub use validate::{time_exceeded, verify};
+pub use validate::{time_exceeded, validate, verify};
 
 /// An unfinished, unpaused run in this checkout on a branch other than HEAD's. Returned
 /// so hooks keep enforcing when HEAD is moved off the run (switch, detach).
@@ -268,3 +320,7 @@ mod tests;
 #[cfg(test)]
 #[path = "setup_tests.rs"]
 mod setup_tests;
+
+#[cfg(test)]
+#[path = "../two_stage_tests.rs"]
+mod two_stage_tests;

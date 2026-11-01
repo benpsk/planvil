@@ -287,3 +287,81 @@ fn scheduling_tools_and_isolated_subagents_are_denied() {
         );
     }
 }
+
+fn with_script() -> Fixture {
+    let mut f = fixture();
+    f.config.verify = Some(crate::verify::ProjectVerify {
+        script: Some("scripts/planvil-verify.sh".into()),
+        ..Default::default()
+    });
+    fs::create_dir_all(f.root.join("scripts")).unwrap();
+    fs::write(f.root.join("scripts/planvil-verify.sh"), "#!/bin/sh\n").unwrap();
+    f
+}
+
+#[test]
+fn the_verify_script_is_protected_in_every_active_stage() {
+    let f = with_script();
+    for stage in [Stage::Implement, Stage::Validate, Stage::Verify] {
+        let c = ctx(&f, stage);
+        assert!(
+            denied(decide(&c, &write("scripts/planvil-verify.sh"))),
+            "{stage:?}"
+        );
+        assert!(
+            denied(decide(&c, &bash("echo exit 0 > scripts/planvil-verify.sh"))),
+            "{stage:?}"
+        );
+        assert!(!denied(decide(&c, &write("scripts/other.sh"))), "{stage:?}");
+    }
+}
+
+#[test]
+fn reading_or_running_the_verify_script_is_still_allowed() {
+    let f = with_script();
+    let c = ctx(&f, Stage::Implement);
+    assert!(!denied(decide(&c, &bash("cat scripts/planvil-verify.sh"))));
+}
+
+#[test]
+fn verify_is_a_build_stage() {
+    assert_eq!(phase(Stage::Verify, Status::Active), Phase::Build);
+}
+
+#[test]
+fn running_the_verify_script_on_its_own_is_allowed() {
+    let f = with_script();
+    let c = ctx(&f, Stage::Implement);
+    for ok in [
+        "./scripts/planvil-verify.sh",
+        "sh scripts/planvil-verify.sh",
+    ] {
+        assert!(!denied(decide(&c, &bash(ok))), "{ok}");
+    }
+    for bad in [
+        "sed -i s/x/y/ scripts/planvil-verify.sh",
+        "./scripts/planvil-verify.sh; echo > scripts/planvil-verify.sh",
+    ] {
+        assert!(denied(decide(&c, &bash(bad))), "{bad}");
+    }
+}
+
+#[test]
+fn running_the_verify_script_after_cd_to_the_repo_root_is_allowed() {
+    let f = with_script();
+    let c = ctx(&f, Stage::Implement);
+    let root = f.root.display().to_string();
+    for ok in [
+        format!("cd {root} && ./scripts/planvil-verify.sh"),
+        "cd . && sh scripts/planvil-verify.sh".to_string(),
+    ] {
+        assert!(!denied(decide(&c, &bash(&ok))), "{ok}");
+    }
+    for bad in [
+        format!("cd {root} && echo exit 0 > scripts/planvil-verify.sh"),
+        format!("cd {root}/src && ./scripts/planvil-verify.sh && rm scripts/planvil-verify.sh"),
+        "cd /tmp && ./scripts/planvil-verify.sh".to_string(),
+    ] {
+        assert!(denied(decide(&c, &bash(&bad))), "{bad}");
+    }
+}

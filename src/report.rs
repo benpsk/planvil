@@ -6,7 +6,7 @@ use crate::docs;
 use crate::git;
 use crate::ops::{self, OpsError, Workspace};
 use crate::policy::stage_name;
-use crate::state::{RunState, Status};
+use crate::state::{RunState, Stage, Status, VerifyRecord};
 use crate::verify::{Outcome, StepResult};
 
 /// Write REPORT.md for a finished or blocked run and return its text.
@@ -35,11 +35,24 @@ pub fn report(cwd: &Path) -> ops::Result<String> {
 fn render(ws: &Workspace, state: &RunState) -> ops::Result<String> {
     let feature = std::fs::read_to_string(ws.doc(docs::FEATURE)).unwrap_or_default();
     let decisions = std::fs::read_to_string(ws.doc(docs::DECISIONS)).unwrap_or_default();
-    let outcome = load_outcome(ws, state);
-    let results: &[StepResult] = outcome.as_ref().map_or(&[], |o| o.results.as_slice());
+    let validated = validate_record(state);
+    let verified = state
+        .last_verify
+        .as_ref()
+        .filter(|v| v.stage == Stage::Verify);
+    let validate_outcome = validated.and_then(|r| load_outcome(ws, r));
+    let verify_outcome = verified.and_then(|r| load_outcome(ws, r));
+    let results: &[StepResult] = validate_outcome
+        .as_ref()
+        .map_or(&[], |o| o.results.as_slice());
 
     let headline = match state.status {
-        Status::Completed => completed_headline(ws, state, outcome.as_ref())?,
+        Status::Completed => completed_headline(
+            ws,
+            state,
+            validate_outcome.as_ref(),
+            verify_outcome.as_ref(),
+        )?,
         Status::Blocked => format!(
             "**Blocked — not verified.** {}",
             state.status_reason.as_deref().unwrap_or("see run status")
@@ -54,7 +67,7 @@ fn render(ws: &Workspace, state: &RunState) -> ops::Result<String> {
         headline,
         String::new(),
         format!(
-            "Base `{}` · run `{}` · stage {} · repair cycles {} · verification runs {}",
+            "Base `{}` · run `{}` · stage {} · repair cycles {} · validate/verify runs {}",
             state.base_branch,
             state.run_id,
             stage_name(state.stage),
@@ -143,43 +156,19 @@ fn render(ws: &Workspace, state: &RunState) -> ops::Result<String> {
         out.extend(answered);
     }
 
-    out.extend(["".into(), "## Verification evidence".into(), String::new()]);
-    match (&state.last_verify, &outcome) {
-        (Some(v), Some(o)) => {
-            out.push(format!(
-                "Run #{} · evidence `{}/{}`",
-                v.run,
-                ws.doc("").display().to_string().trim_end_matches('/'),
-                v.evidence_dir
-            ));
-            out.push(String::new());
-            out.push("| Step | Kind | Command | Exit | Duration | Logs |".into());
-            out.push("|---|---|---|---|---|---|".into());
-            for r in &o.results {
-                out.push(format!(
-                    "| {} | {:?} | `{}` | {} | {} ms | `{}`, `{}` |",
-                    r.name,
-                    r.kind,
-                    r.argv.join(" ").replace('|', "\\|"),
-                    r.exit_code.map_or_else(
-                        || if r.timed_out {
-                            "timeout".to_string()
-                        } else {
-                            "—".to_string()
-                        },
-                        |c| c.to_string()
-                    ),
-                    r.ended_ms.saturating_sub(r.started_ms),
-                    r.stdout,
-                    r.stderr
-                ));
-            }
-            if !o.app_notes.is_empty() {
-                out.push(format!("\nApp: {}", o.app_notes.join("; ")));
-            }
-        }
-        _ => out.push("No verification evidence recorded.".into()),
-    }
+    out.extend(["".into(), "## Evidence".into()]);
+    out.extend(evidence_section(
+        ws,
+        "Validate: this feature's checks",
+        validated,
+        validate_outcome.as_ref(),
+    ));
+    out.extend(evidence_section(
+        ws,
+        "Verify: the whole app",
+        verified,
+        verify_outcome.as_ref(),
+    ));
     out.extend([
         String::new(),
         "## Limits of this evidence".into(),
@@ -190,12 +179,70 @@ fn render(ws: &Workspace, state: &RunState) -> ops::Result<String> {
     Ok(out.join("\n") + "\n")
 }
 
+/// The Validate record behind the acceptance-criteria table: the pass Verify built on, or
+/// the latest validation result.
+fn validate_record(state: &RunState) -> Option<&VerifyRecord> {
+    state.validated.as_ref().or(state
+        .last_verify
+        .as_ref()
+        .filter(|v| v.stage == Stage::Validate))
+}
+
+fn evidence_section(
+    ws: &Workspace,
+    title: &str,
+    record: Option<&VerifyRecord>,
+    outcome: Option<&Outcome>,
+) -> Vec<String> {
+    let mut out = vec![String::new(), format!("### {title}"), String::new()];
+    let (Some(v), Some(o)) = (record, outcome) else {
+        out.push("No evidence recorded.".into());
+        return out;
+    };
+    out.push(format!(
+        "Run #{} · {} · evidence `{}/{}`",
+        v.run,
+        if v.passed { "passed" } else { "FAILED" },
+        ws.doc("").display().to_string().trim_end_matches('/'),
+        v.evidence_dir
+    ));
+    out.push(String::new());
+    out.push("| Step | Kind | Command | Exit | Duration | Logs |".into());
+    out.push("|---|---|---|---|---|---|".into());
+    for r in &o.results {
+        let exit = r.exit_code.map_or_else(
+            || {
+                if r.timed_out {
+                    "timeout".to_string()
+                } else {
+                    "—".to_string()
+                }
+            },
+            |c| c.to_string(),
+        );
+        out.push(format!(
+            "| {} | {:?} | `{}` | {exit} | {} ms | `{}`, `{}` |",
+            r.name,
+            r.kind,
+            r.argv.join(" ").replace('|', "\\|"),
+            r.ended_ms.saturating_sub(r.started_ms),
+            r.stdout,
+            r.stderr
+        ));
+    }
+    if !o.app_notes.is_empty() {
+        out.push(format!("\nApp: {}", o.app_notes.join("; ")));
+    }
+    out
+}
+
 /// "Completed" only when the recorded evidence exists and still matches the code and the
 /// confirmed requirements; otherwise say exactly why the evidence no longer holds.
 fn completed_headline(
     ws: &Workspace,
     state: &RunState,
-    outcome: Option<&Outcome>,
+    validate_outcome: Option<&Outcome>,
+    verify_outcome: Option<&Outcome>,
 ) -> ops::Result<String> {
     let Some(record) = state.last_verify.as_ref().filter(|v| v.passed) else {
         return Ok(
@@ -203,10 +250,12 @@ fn completed_headline(
                 .into(),
         );
     };
-    if outcome.is_none() {
+    // Runs finished before Validate and Verify were split end on a validation pass.
+    let split = record.stage == Stage::Verify;
+    if validate_outcome.is_none() {
+        let path = validate_record(state).map_or("?", |v| v.evidence_dir.as_str());
         return Ok(format!(
-            "**Completed, but the evidence is missing.** `{}/result.json` cannot be read; treat this as unverified.",
-            record.evidence_dir
+            "**Completed, but the evidence is missing.** `{path}/result.json` cannot be read; treat this as unverified."
         ));
     }
     let requirements_same = ws.doc_hash(docs::FEATURE)? == state.feature_confirmed_hash;
@@ -217,12 +266,31 @@ fn completed_headline(
                 .into(),
         );
     }
-    Ok("**Completed.** Every acceptance criterion passed against the current code.".into())
+    let whole_app_checked = verify_outcome.is_some_and(|o| {
+        o.results
+            .iter()
+            .any(|r| r.kind != crate::verify::StepKind::Preflight)
+    });
+    Ok(if split && !whole_app_checked {
+        "**Completed.** Every acceptance criterion passed against the current code, but no whole-app \
+         check is set up (no verify script); run `/planvil:planvil init` to add one."
+            .into()
+    } else if split {
+        "**Completed.** Every acceptance criterion passed, and the whole app passed its verify script, \
+         against the current code."
+            .into()
+    } else {
+        "**Completed.** Every acceptance criterion passed against the current code.".into()
+    })
 }
 
-fn load_outcome(ws: &Workspace, state: &RunState) -> Option<Outcome> {
-    let v = state.last_verify.as_ref()?;
-    let raw = std::fs::read(ws.feature_dir.join(&v.evidence_dir).join("result.json")).ok()?;
+fn load_outcome(ws: &Workspace, record: &VerifyRecord) -> Option<Outcome> {
+    let raw = std::fs::read(
+        ws.feature_dir
+            .join(&record.evidence_dir)
+            .join("result.json"),
+    )
+    .ok()?;
     serde_json::from_slice(&raw).ok()
 }
 

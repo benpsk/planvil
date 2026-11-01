@@ -26,7 +26,7 @@ const CODEX_DIFFERENCES: [(&str, &str); 4] = [
     ),
 ];
 
-const CAPABILITIES: [(&str, &str); 12] = [
+const CAPABILITIES: [(&str, &str); 13] = [
     (
         "Edit/Write/MultiEdit/NotebookEdit before Implement",
         "enforced: denied outside the feature folder (PreToolUse)",
@@ -50,6 +50,10 @@ const CAPABILITIES: [(&str, &str); 12] = [
     (
         "Branch switching or detaching HEAD mid-run",
         "denied; a live run on another branch still blocks mutations",
+    ),
+    (
+        "The project's verify script",
+        "protected in every active stage; may be run on its own, not edited",
     ),
     (
         "Finishing before Done",
@@ -196,11 +200,20 @@ pub fn doctor(cwd: &Path) -> (String, bool) {
                 },
             ));
             let verify = cfg.verify.clone().unwrap_or_default();
+            let script = match &verify.script {
+                Some(s) if ws.repo_root.join(s).is_file() => format!("script `{s}`"),
+                Some(s) => format!("script `{s}` MISSING"),
+                None => "no script".to_string(),
+            };
+            let script_ok = verify
+                .script
+                .as_ref()
+                .is_none_or(|s| ws.repo_root.join(s).is_file());
             checks.push(check(
-                !verify.checks.is_empty() || verify.app.is_some(),
+                script_ok && (verify.script.is_some() || !verify.checks.is_empty()),
                 false,
                 format!(
-                    "verify: {} preflight, {} checks, app {}",
+                    "verify: {script}, {} preflight, {} checks, app {}",
                     verify.preflight.len(),
                     verify.checks.len(),
                     if verify.app.is_some() {

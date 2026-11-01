@@ -20,7 +20,10 @@ pub enum Stage {
     Plan,
     Decide,
     Implement,
+    /// The feature's own checks (`validate.json`) prove every acceptance criterion.
     Validate,
+    /// The project's verify script proves the whole app still works.
+    Verify,
     /// Legacy: failures now loop back to Feature. Kept so older state files load.
     Repair,
     Done,
@@ -126,9 +129,16 @@ pub struct Question {
     pub answer: Option<Answer>,
 }
 
+fn default_record_stage() -> Stage {
+    Stage::Validate
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VerifyRecord {
+    /// Which stage produced it: Validate (feature checks) or Verify (whole app).
+    #[serde(default = "default_record_stage")]
+    pub stage: Stage,
     pub run: u32,
     pub at: u64,
     /// Code fingerprint the evidence was collected against.
@@ -205,8 +215,16 @@ pub struct RunState {
     /// A run started only to (re)discover the project setup; it ends after Setup.
     #[serde(default)]
     pub setup_only: bool,
+    /// The latest validate or verify result.
     #[serde(default)]
     pub last_verify: Option<VerifyRecord>,
+    /// The validation pass that Verify builds on. Verify requires the same code.
+    #[serde(default)]
+    pub validated: Option<VerifyRecord>,
+    /// Hash of the project's verify script as the run knows it. Verify blocks if the file
+    /// changes during the run; a user `resume` accepts the current file.
+    #[serde(default)]
+    pub verify_script_hash: Option<String>,
     #[serde(default)]
     pub stop_guard: StopGuard,
     /// Steps that failed in the last verification, with their command hash. Changing or
@@ -253,6 +271,8 @@ impl RunState {
             setup_approved_hash: None,
             setup_only: false,
             last_verify: None,
+            validated: None,
+            verify_script_hash: None,
             stop_guard: StopGuard::default(),
             failed_steps: std::collections::BTreeMap::new(),
             baseline_dirty: Vec::new(),
@@ -336,6 +356,14 @@ mod tests {
             ..sample()
         };
         assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn record_without_stage_loads_as_validate() {
+        let json =
+            r#"{"run":1,"at":1,"fingerprint":"f","passed":true,"evidence_dir":"e","failing":[]}"#;
+        let r: VerifyRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(r.stage, Stage::Validate);
     }
 
     #[test]

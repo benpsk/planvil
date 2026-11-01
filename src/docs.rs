@@ -12,7 +12,10 @@ pub const PLAN: &str = "PLAN.md";
 pub const DECISIONS: &str = "DECISIONS.md";
 pub const HANDOFF: &str = "HANDOFF.md";
 pub const REPORT: &str = "REPORT.md";
-pub const VERIFY: &str = "verify.json";
+/// The feature's own checks and runtime scenarios, run in the Validate stage.
+pub const VALIDATE: &str = "validate.json";
+/// The same file's name before Validate and Verify were split. Still read when present.
+pub const LEGACY_VALIDATE: &str = "verify.json";
 
 /// Templates written into a new feature folder: (file name, body).
 const TEMPLATES: [(&str, &str); 6] = [
@@ -21,7 +24,7 @@ const TEMPLATES: [(&str, &str); 6] = [
     (PLAN, include_str!("../templates/PLAN.md")),
     (DECISIONS, include_str!("../templates/DECISIONS.md")),
     (HANDOFF, include_str!("../templates/HANDOFF.md")),
-    (VERIFY, include_str!("../templates/verify.json")),
+    (VALIDATE, include_str!("../templates/validate.json")),
 ];
 
 const FEATURE_SECTIONS: [&str; 5] = [
@@ -48,7 +51,8 @@ pub fn write_missing_templates(feature_dir: &Path, branch: &str) -> std::io::Res
     let mut created = Vec::new();
     for (name, body) in TEMPLATES {
         let path = feature_dir.join(name);
-        if path.exists() {
+        let legacy = name == VALIDATE && feature_dir.join(LEGACY_VALIDATE).exists();
+        if path.exists() || legacy {
             continue;
         }
         std::fs::write(&path, body.replace("{{branch}}", branch))?;

@@ -41,7 +41,7 @@ pub(super) fn gate_problems(ws: &Workspace, state: &RunState) -> Result<Vec<Stri
         Stage::Plan => {
             let criteria = ws.criteria()?;
             let mut p = docs::check_plan(&ws.read_doc(docs::PLAN)?, &criteria);
-            match ws.verify_plan() {
+            match ws.validate_plan() {
                 Ok(plan) => p.extend(plan.coverage_problems(&criteria)),
                 Err(e) => p.push(e.to_string()),
             }
@@ -55,13 +55,16 @@ pub(super) fn gate_problems(ws: &Workspace, state: &RunState) -> Result<Vec<Stri
             if ws.config.require_plan_approval {
                 let plan = ws.plan_hash()?;
                 if plan.is_none() || plan != state.plan_approved_hash {
-                    p.push("PLAN.md and verify.json are not approved by the user at their current content (`planvil ask --approve-plan`)".into());
+                    p.push(format!(
+                        "PLAN.md and {} are not approved by the user at their current content (`planvil ask --approve-plan`)",
+                        ws.validate_file()
+                    ));
                 }
             }
             p
         }
         Stage::Implement => {
-            let mut p = match ws.verify_plan() {
+            let mut p = match ws.validate_plan() {
                 Ok(plan) => plan.coverage_problems(&ws.criteria()?),
                 Err(e) => vec![e.to_string()],
             };
@@ -69,13 +72,15 @@ pub(super) fn gate_problems(ws: &Workspace, state: &RunState) -> Result<Vec<Stri
             p
         }
         Stage::Repair => unchanged_since_failure(ws, state)?,
-        Stage::Validate => vec!["validation advances only through `planvil verify`".into()],
+        Stage::Validate => vec!["Validate advances only through `planvil validate`".into()],
+        Stage::Verify => vec!["Verify advances only through `planvil verify`".into()],
         Stage::Done => vec!["the run is done".into()],
     };
     Ok(problems)
 }
 
-/// Names of the checks that failed, when the run is looping after a failed verification.
+/// Names of the checks that failed, when the run is looping after a failed validate or
+/// verify.
 pub(super) fn failed_verification(state: &RunState) -> Option<&[String]> {
     state
         .last_verify
@@ -91,8 +96,7 @@ fn unchanged_since_failure(ws: &Workspace, state: &RunState) -> Result<Vec<Strin
     };
     if ws.fingerprint()? == v.fingerprint {
         return Ok(vec![
-            "nothing changed since the failed verification; fix the cause before revalidating"
-                .into(),
+            "nothing changed since the failed check; fix the cause before validating again".into(),
         ]);
     }
     Ok(Vec::new())

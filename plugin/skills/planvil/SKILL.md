@@ -1,6 +1,6 @@
 ---
 name: planvil
-description: Run an enforced feature workflow with planvil (setup → feature → audit → plan → decide → implement → validate → done, looping on failure). Use when the user invokes planvil (/planvil:planvil in Claude Code, $planvil:planvil in Codex), asks to build a feature "with planvil", or wants to resume or check a planvil run.
+description: Run an enforced feature workflow with planvil (setup → feature → audit → plan → decide → implement → validate → verify → done, looping on failure). Use when the user invokes planvil (/planvil:planvil in Claude Code, $planvil:planvil in Codex), asks to build a feature "with planvil", or wants to resume or check a planvil run.
 argument-hint: "[branch] [spec.md] | init | status | report | doctor | help"
 ---
 
@@ -42,13 +42,15 @@ reply.
 
 ## Rules
 
-- Never edit `.planvil.json`, anything under a `.planvil/` folder, or hook settings. Never
-  hand-edit run state. Only planvil commands change it.
+- Never edit `.planvil.json`, the project's verify script (its `verify.script`), anything
+  under a `.planvil/` folder, or hook settings. Never hand-edit run state. Only planvil
+  commands change it. You may run the verify script.
 - `planvil pause`, `planvil resume` and `planvil cancel` are user actions. If the user wants one,
   ask them to type it as their own message (for example `planvil cancel`). Never run them yourself.
 - Never weaken, delete or renumber acceptance criteria, and never weaken or delete existing
   checks to get a pass. If a requirement seems wrong, ask the user.
-- Never claim something works unless `planvil verify` printed PASSED for it. Build success,
+- Never claim something works unless `planvil validate` and `planvil verify` printed PASSED
+  for it. Build success,
   an HTTP 200 from a health check, or your own reading of the code is not proof.
 - Preserve the user's uncommitted work. Do not stash, reset, clean, push, merge, or switch
   branches during a run.
@@ -139,10 +141,28 @@ project already has, best sources first:
 3. Manifests: `go.mod`, `Cargo.toml`, `pyproject.toml`, `composer.json`, `pom.xml`, `build.gradle`, ...
 4. Services and environment: `docker-compose.yml`, `.env.example`, `README`, `DEV.md`, `CONTRIBUTING`.
 
-Write `setup.proposed.json` in the feature folder:
+Write two files in the feature folder.
+
+`verify.proposed.sh`: **the project's verify script**. It checks the whole app the way the
+team does (lint, types, every test suite, build), runs from the repository root, and exits 0
+only when all of it passes. Use the same commands as CI. Start it with a shebang
+(`#!/usr/bin/env bash` or `#!/bin/sh`) and `set -e`. It runs in the **Verify** stage of every
+feature, after the feature's own checks pass. `setup apply` installs it at the path in
+`script`; it is committed with the project and protected during runs.
+
+```sh
+#!/usr/bin/env bash
+set -euo pipefail
+make lint
+go vet ./...
+go test ./...
+```
+
+`setup.proposed.json`:
 
 ```json
 {
+  "script": "scripts/planvil-verify.sh",
   "env": { "APP_ENV": "test" },
   "preflight": [{ "name": "postgres", "run": ["pg_isready", "-h", "127.0.0.1"] }],
   "app": {
@@ -151,18 +171,19 @@ Write `setup.proposed.json` in the feature folder:
     "ready": { "http": "http://127.0.0.1:8080/health" },
     "startup_timeout_secs": 90
   },
-  "checks": [
-    { "name": "lint", "run": ["make", "lint"] },
-    { "name": "unit", "run": ["go", "test", "./..."], "cwd": "backend", "timeout_secs": 900 }
-  ],
+  "checks": [],
   "known_failures": []
 }
 ```
 
+- **script**: where the verify script will live (repository-relative). `script_timeout_secs`
+  defaults to 3600.
+
 - **preflight**: tools and services the checks need (database, cache, browser driver).
 - **app**: how to start the app for runtime scenarios, plus a readiness probe: an `http` URL,
   or a `run` command that exits 0 when ready. Omit it for a library with no runnable app.
-- **checks**: what the team already enforces (lint, types, tests), using the same commands as CI.
+- **checks**: optional extra whole-app checks that run next to the script. Prefer putting
+  everything in the script; use a check only to isolate a pre-existing failure (below).
 - Use secrets by variable name (`env`), never by value.
 
 Run `planvil setup check`. It runs everything once and reports CANNOT RUN, TIMEOUT, pass or
@@ -170,13 +191,13 @@ fails for each step.
 
 - **CANNOT RUN** or a failing preflight: fix the command, or ask the user to start the missing
   service.
-- **A check that fails** on the current code: first confirm the command itself is right. If the
-  failure is real and pre-existing, split the check so only the failing part is isolated (for
-  example, a separate check for the one failing package), and list that part in
-  `known_failures`. Never park a whole test suite there.
+- **The verify script fails** on the current code: first confirm the commands are right. If a
+  failure is real and pre-existing, take only that part out of the script (for example, the one
+  failing package), put it in a separate check, and list that check in `known_failures`. The
+  script itself can never be a known failure. Never park a whole test suite there.
 
-Repeat until it says USABLE. Then summarize for the user in a few lines: how the app starts,
-what is checked, and any known failures. Run `planvil ask --approve-setup "<summary>"` and ask the user
+Repeat until it says USABLE. Then summarize for the user in a few lines: what the verify
+script runs, how the app starts, and any known failures. Run `planvil ask --approve-setup "<summary>"` and ask the user
 with AskUserQuestion. After they approve, run `planvil answer --approved "<reply>"`
 and then `planvil setup apply`.
 
@@ -197,8 +218,10 @@ constraints and gaps against FEATURE.md. Record observations, not guesses. Then 
 `planvil advance`.
 
 **Plan.** Write PLAN.md (Status, Steps, Verification, Risks). Map every AC under
-`## Verification`. Write `verify.json` in the feature folder so every AC has at least one
-check or runtime scenario:
+`## Verification`. Write `validate.json` in the feature folder (an older folder may have
+`verify.json` instead; keep using that one) so every AC has at least one check or runtime
+scenario. These are **this feature's** checks; the whole app is checked later by the
+project's verify script:
 
 ```json
 {
@@ -227,18 +250,27 @@ For a material question, run `planvil ask "<question>"`, ask the user with AskUs
 (the alternatives as options), then run `planvil answer "<reply>"`. Ask one question at a time.
 Update PLAN.md if an answer changes it. List questions under `## Open questions` as `- [x]`
 once answered. If planvil asks for plan approval, use `planvil ask --approve-plan "..."`. Approval covers
-PLAN.md and verify.json together.
+PLAN.md and validate.json together.
 Then run `planvil advance`.
 
 **Implement.** Implement PLAN.md step by step, following the codebase's conventions. Keep
 PLAN.md `## Status` current. You may add tests. Then run `planvil advance`.
 
-**Validate.** Run `planvil verify` and wait. It runs preflight, the project checks, the app,
-and your scenarios, and records evidence. Do not edit files while it runs.
+**Validate.** Run `planvil validate` and wait. It runs preflight, then this feature's checks
+and scenarios from validate.json (against the app when one is configured), and records
+evidence. It answers one question: does this feature do what FEATURE.md says? Do not edit
+files while it runs. When it passes, the run moves to Verify.
 
-**When verification fails**, the run loops back to **Feature** by itself, and you go through
-the stages again without asking the user. Every `next:` line starts with
-`Repair cycle N/M` and names the failing checks and the evidence folder.
+**Verify.** Run `planvil verify` and wait. It runs the project's verify script (and any
+project checks) on the whole app and records evidence. It answers: did this feature break
+anything else? If the code changed after validation passed, the run goes back to Validate
+first. If the verify script itself changed during the run, the run is blocked: tell the
+user, who types `planvil resume` if the change was theirs. When it passes, the run is done.
+
+**When validation or verification fails**, the run loops back to **Feature** by itself, and
+you go through the stages again without asking the user. Every `next:` line starts with
+`Repair cycle N/M`, says which stage failed, and names the failing checks and the evidence
+folder. Both stages share one repair budget.
 
 - **Feature:** re-read FEATURE.md against the failure. If it still holds, run `planvil advance`.
   If the failure shows a requirement must change, or that it contradicts what the user
@@ -253,10 +285,10 @@ the stages again without asking the user. Every `next:` line starts with
 - **Decide:** record new decisions. Ask the user only if the fix needs a business or scope
   decision.
 - **Implement:** make the fix. The gate refuses if nothing changed since the failed run.
-- **Validate:** run `planvil verify` again.
+- **Validate:** run `planvil validate` again, then **Verify:** `planvil verify`.
 
 planvil stops the loop after its limits (default: 5 cycles, or 3 identical failures in a row)
-and blocks the run. If verification reports files changed while it ran, a check is
+and blocks the run. If validate or verify reports files changed while it ran, a check is
 generating files: add them to .gitignore.
 
 **Blocked.** Report the reason and diagnostics to the user honestly, as unverified. They fix

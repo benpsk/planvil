@@ -216,7 +216,11 @@ The finished extension must preserve the normal AI terminal experience while enf
 4. **Feature doc:** if `FEATURE.md` is missing, interview the user (goal, users, behavior, scope, out of scope, acceptance criteria) and write it; the user confirms before the run continues. If a spec path was given, copy it into `FEATURE.md`, normalize it to the template, and assign AC IDs without changing meaning.
 5. **Activate:** create run state at stage `Audit`. Enforcement starts here.
 
-Stage order: **(Setup →) Feature → Audit → Plan → Decide → Implement → Validate → Done**, with failures looping back to Feature. Setup runs only for a repository with no project verification yet.
+Stage order: **(Setup →) Feature → Audit → Plan → Decide → Implement → Validate → Verify → Done**, with failures in either checking stage looping back to Feature. Setup runs only for a repository with no project verification yet.
+
+- **Validate** (`planvil validate`) runs preflight and the feature's own checks and scenarios from `validate.json`: does this feature meet its acceptance criteria? A pass moves to Verify and records the code fingerprint it passed on.
+- **Verify** (`planvil verify`) runs preflight, the project's verify script (written and approved once in Setup, installed at `verify.script`, protected during runs) and any project checks: does the whole app still work? It refuses to run on code that differs from the validated fingerprint and sends the run back to Validate (`Revalidate`, which keeps the repair budget). A pass completes the run.
+- Both failures go through the same repair loop and budget. `known_failures` apply only in Verify. The failure signature is prefixed with the stage, so a validate failure and a verify failure never count as identical.
 
 ### Layout
 
@@ -289,7 +293,8 @@ Trade-off accepted: slower to write than TypeScript, and releases need per-platf
 | `planvil status` | user / skill | Show stage, status, next action, blockers |
 | `planvil advance` | skill | Check the current gate; move to the next stage if it passes |
 | `planvil answer <id> <text>` | skill | Record a user answer to an open question |
-| `planvil verify` | skill | Run configured checks and scenarios; record evidence |
+| `planvil validate` | skill | Validate stage: run the feature's checks and scenarios; record evidence |
+| `planvil verify` | skill | Verify stage: run the project's verify script on the whole app; record evidence |
 | `planvil pause` / `resume` / `cancel` | user | Human control (§10) |
 | `planvil hook <host> <event>` | host hooks | Pre-tool gate, post-tool record, stop/continuation |
 | `planvil install [--host claude\|codex] [--project]` | user, once | Merge skill and hook config into host settings; idempotent |
@@ -350,7 +355,7 @@ across turns with `--resume`.
 | AC-07 | Real host: routine choices (`printf` over `echo`, argument handling) recorded in DECISIONS.md without asking |
 | AC-08 | `ops::full_run_fails_repairs_and_completes`; real host: verification #1 failed, #2 passed in the same session |
 | AC-09 | Hook test; real host: stop blocked three times with the next action |
-| AC-10 | Done is reachable only through `planvil verify`; `report` refuses unfinished runs (CLI test) |
+| AC-10 | Done is reachable only through `planvil validate` then `planvil verify` on the same code; `report` refuses unfinished runs (CLI test, `two_stage_tests.rs`) |
 | AC-11 | `fingerprint` tests; Repair cannot revalidate unchanged code; results discarded if files change during verify |
 | AC-12 | `ops::missing_tool_blocks_instead_of_passing`; `verify` preflight tests |
 | AC-13 | `machine` limit tests; `ops::repeated_identical_failures_block_the_run`; real host: no-progress stops end as Blocked |
@@ -374,7 +379,7 @@ after the build. Every cheaply fixable finding was fixed with a regression test:
 - writes outside the repository during Build;
 - scheduling tools and worktree-isolated subagents;
 - answers bound to the recorded user reply;
-- plan approval covering verify.json;
+- plan approval covering validate.json;
 - no-op and weakened checks;
 - stale-evidence loops;
 - orphaned processes;
@@ -393,7 +398,7 @@ Inherent limits that remain, by design:
 
 - Windows: builds via cargo-dist, but the test suite uses POSIX `sh` and is run only on Linux and macOS.
 - A completed run is not re-checked if the code changes after Done; start a new run.
-- If `planvil verify` itself is killed, its process groups survive until stopped; the next verification detects them and refuses to run (it never kills a recorded ID itself).
+- If `planvil validate` or `planvil verify` itself is killed, its process groups survive until stopped; the next verification detects them and refuses to run (it never kills a recorded ID itself).
 - Qualitative (manual) observations are not supported; every criterion needs an automated check or scenario.
 
 ## 17. Codex CLI adapter

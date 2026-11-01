@@ -1,7 +1,7 @@
 # planvil plugin for Claude Code
 
 This plugin adds the `/planvil` skill and the hooks that enforce planvil's feature workflow:
-Feature → Audit → Plan → Decide → Implement → Validate → Repair → Done. Before the plan gates
+Feature → Audit → Plan → Decide → Implement → Validate → Verify → Done. Before the plan gates
 pass, source edits are denied. The agent is sent back when it tries to stop on an unfinished
 run. Completion requires recorded, current verification evidence.
 
